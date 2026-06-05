@@ -1,0 +1,15 @@
+# .NET build output
+bin/
+obj/
+
+# Local NuGet (globalPackagesFolder redirected here via nuget.config)
+.nuget-packages/
+.nuget-http/
+
+# IDE
+.vs/
+.idea/
+*.user
+
+# OS
+.DS_Store

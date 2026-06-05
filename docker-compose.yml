@@ -1,0 +1,13 @@
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: ukg-falkordb
+    ports:
+      - "6379:6379"      # Redis protocol (GRAPH.QUERY)
+      - "3000:3000"      # FalkorDB Browser (optional UI)
+    volumes:
+      - falkordb-data:/data
+    restart: unless-stopped
+
+volumes:
+  falkordb-data:

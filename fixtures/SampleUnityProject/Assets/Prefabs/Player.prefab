@@ -1,0 +1,20 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &1000000000000000000
+GameObject:
+  m_ObjectHideFlags: 0
+  serializedVersion: 6
+  m_Name: Player
+  m_Component:
+  - component: {fileID: 1000000000000000001}
+  - component: {fileID: 1000000000000000002}
+--- !u!4 &1000000000000000001
+Transform:
+  m_GameObject: {fileID: 1000000000000000000}
+--- !u!114 &1000000000000000002
+MonoBehaviour:
+  m_GameObject: {fileID: 1000000000000000000}
+  m_Script: {fileID: 11500000, guid: 33333333333333333333333333333333, type: 3}
+  m_Name:
+  health: 100
+  inventory: {fileID: 0}
