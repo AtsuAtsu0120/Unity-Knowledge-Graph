@@ -203,3 +203,17 @@
   それぞれ独立に改善できる。総合点（レーンB・E2E）も併せ持つので全体像は失わない。
 - **代替案**: 単一の Recall 指標 → 交絡で改善判断不能。E2Eのみ → 高コスト・非決定的で日常運用に不向き。
 - **影響**: `tests/Ukg.Eval/golden/{queries,curation}.json`、`EvalHarness.cs`、`docs/EVAL.md` を追加。
+
+### ADR-011 追補: 言語ブリッジと英語クエリ徹底（E2E eval の知見, 2026-06-06）
+
+- **観測**: E2E A/B で、エージェントが**日本語の質問をそのまま** `candidates "選択肢ボタン入力"` に投げ →
+  `confidence:none`（グラフは英語語彙・doc無しのため届かない）→ grep フォールバックが誤クラスに着地。
+  ※ candidates の miss シグナル自体は正しく none を返した（false-high ではない）。英語で引けば
+  `candidates "option button"` は high で正解。問題は**日本語クエリ→英語グラフの言語ブリッジ欠落**。
+- **判断（解決策 a = #1+#2）**:
+  - #1 **英語クエリ徹底**: グラフは英語語彙なので、エージェントは英語のコード用語で引く（日本語の問いは
+    英語化してから）。`ukg-bootstrap` スキルの運用ルールと対象 `CLAUDE.md` 推奨行に明記。
+  - #2 **`retryEnglish` ヒント**: `candidates` が非ASCIIクエリで none/low の時、応答に `retryEnglish:true` と
+    「英語で引き直せ」を出し、grep 誤着地の前に自己修正させる（CLI 数行）。
+  - 任意の上積み: マルチリンガル埋め込み（`UKG_EMBEDDER=http`）で search を日英横断に（API課金）。
+- **影響**: `Program.cs` の Candidates に `retryEnglish` 追加。`ukg-bootstrap/SKILL.md` に運用ルール追記。

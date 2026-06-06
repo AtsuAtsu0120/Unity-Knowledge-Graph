@@ -230,11 +230,19 @@ internal static class UkgCli
         double? top = TopScore(r);
         string confidence = top is null ? "none" : top >= 1.0 ? "high" : "low";
         bool hit = confidence == "high";
+        // グラフは英語語彙で構築される。日本語等の非ASCIIクエリが弱い/ヒット無しの時は、
+        // grep に落ちる前に「英語のコード用語で引き直す」よう促す（ADR-011 #言語ブリッジ）。
+        bool nonAscii = args[1].Any(c => c > 0x7F);
+        bool retryEnglish = !hit && nonAscii;
         string recommendation = confidence switch
         {
             "high" => "グラフに十分な候補があります。grep は不要です。",
-            "low" => "弱い候補が見つかりました。まず上位候補を確認し、的外れなら grep にフォールバックしてください。",
-            _ => "グラフにヒットがありません。grep にフォールバックし、理解したら ukg sem/concept add で書き戻してください。",
+            "low" => retryEnglish
+                ? "弱い候補です。グラフは英語語彙で構築されています。まず英語のコード用語で引き直してください（例: candidates \"option button\"）。それでも的外れなら grep。"
+                : "弱い候補が見つかりました。まず上位候補を確認し、的外れなら grep にフォールバックしてください。",
+            _ => retryEnglish
+                ? "ヒットなし。グラフは英語語彙で構築されています。grep の前に、まず英語のコード用語で引き直してください（例: candidates \"option button\"）。それでも none なら grep。"
+                : "グラフにヒットがありません。grep にフォールバックし、理解したら ukg sem/concept add で書き戻してください。",
         };
         Write(new
         {
@@ -242,6 +250,7 @@ internal static class UkgCli
             hit,
             confidence,
             topScore = top,
+            retryEnglish,
             recommendation,
             columns = r.Columns,
             rows = r.Rows
