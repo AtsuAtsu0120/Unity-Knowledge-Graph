@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# ukg: コミット後にナレッジグラフを増分更新する（変更が無ければ即スキップ）。
+# 導入: git config core.hooksPath hooks   （またはこのファイルを .git/hooks/ にコピー）
+set -euo pipefail
+
+PROJECT="${UKG_PROJECT:-fixtures/SampleUnityProject}"
+CLI="dotnet run --project src/Ukg.Cli --"
+
+$CLI index "$PROJECT" ${UKG_MANIFEST:+--unity-manifest "$UKG_MANIFEST"} || \
+  echo "[ukg] index skipped (graph DB unavailable?)" >&2

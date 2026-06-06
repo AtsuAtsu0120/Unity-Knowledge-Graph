@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# ukg: マージ/プル後にナレッジグラフを増分更新する（変更が無ければ即スキップ）。
+# 導入: git config core.hooksPath hooks   （またはこのファイルを .git/hooks/ にコピー）
+set -euo pipefail
+
+# Unityプロジェクトのパス（必要に応じて UKG_PROJECT で上書き）
+PROJECT="${UKG_PROJECT:-fixtures/SampleUnityProject}"
+CLI="dotnet run --project src/Ukg.Cli --"
+
+# FalkorDB が落ちている等で失敗してもコミット操作は止めない
+$CLI index "$PROJECT" ${UKG_MANIFEST:+--unity-manifest "$UKG_MANIFEST"} || \
+  echo "[ukg] index skipped (graph DB unavailable?)" >&2

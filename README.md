@@ -26,7 +26,7 @@ Skillの漸進的開示で軽量に保つ。コアは `Ukg.Core` に分離して
 src/
   Ukg.Core/         グラフモデル・FalkorDBクライアント・リポジトリ・埋め込み・コミュニティ
   Ukg.Extractors/   CSharpExtractor(Roslyn) / AssetExtractor(.meta,YAML) / UnityManifest / IndexPipeline
-  Ukg.Cli/          ukg コマンド（index/search/query/find/neighbors/deps/impact/sem/concept/community）
+  Ukg.Cli/          ukg コマンド（index/status/watch/search/query/find/neighbors/deps/impact/sem/concept/community/reflect）
 unity/
   com.ukg.exporter/ Unity Editor 用エクスポータ(UPM)。AssetDatabase真値の依存をJSON出力（任意）
 skills/
@@ -52,8 +52,24 @@ docs/
 
 - マニフェスト無し: `.meta`/YAML を正規表現で解析（近似・Unity不要）。
 - マニフェスト有り: `AssetDatabase.GetDependencies` の正確な依存＋`MonoScript`の厳密な script→型。
-- 自動再インデックスは git hook / CI から `ukg index` を叩く運用を想定（増分埋め込みで再計算は最小）。
 - UPM 導入と batch 実行は `unity/com.ukg.exporter/README.md` 参照。
+
+### ライブ更新（鮮度の自動管理 / ADR-009）
+
+**構造はイベント駆動で自動・決定的に、意味はLLMが手入れ**という役割分担で鮮度を保つ。
+
+- `ukg index` は変更が無ければ即スキップ（内容ハッシュ差分）。コード変更時だけ実コストが出る。
+- `ukg status <proj>` で鮮度判定（`fresh`/`reviewPending`）。Claude は構造の質問前にこれで確認し、
+  古ければ自分で `index` してから答える（読み取り時の自己修復）。
+- コード変更で古くなった**意味エッジは自動で `needsReview` 化**（stale伝播）。
+  `ukg reflect` / `ukg sem review` で surface し、`sem confirm` / `sem add --supersede` で手入れ。
+- 自動トリガ: `ukg watch <proj>`（ファイル監視）、git hooks（`hooks/`）、CI（`.github/workflows/ukg.yml`）。
+
+```bash
+ukg status /path/to/UnityProject     # 古い？要レビュー？
+ukg watch  /path/to/UnityProject     # 変更を監視して自動再インデックス
+ukg reflect                          # 意味層のメンテ候補をまとめて取得
+```
 
 ## 使い方
 

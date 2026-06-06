@@ -54,8 +54,16 @@ public sealed class GraphClient : IDisposable
         var full = Cypher.WithParams(cypher, parameters);
         // --compact 形式: 各スカラーが [typeCode, value] で返るため型を正しく判定できる
         // （verbose だと全桁数字の文字列 guid が数値に化けるなどの誤変換が起きる）。
-        var reply = _db.Execute(command, _graph, full, "--compact");
-        return ParseReply(reply);
+        try
+        {
+            var reply = _db.Execute(command, _graph, full, "--compact");
+            return ParseReply(reply);
+        }
+        catch (Exception ex) when (command == "GRAPH.RO_QUERY" && ex.Message.Contains("empty key"))
+        {
+            // 未作成グラフへの読み取りは「空」とみなす（鮮度判定などが初回でも落ちないように）。
+            return new QueryResult(Array.Empty<string>(), new List<object?[]>(), Array.Empty<string>());
+        }
     }
 
     // FalkorDB compact value type codes (ValueType enum)

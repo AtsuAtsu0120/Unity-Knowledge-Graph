@@ -24,8 +24,8 @@ public sealed class IntegrationTests
         catch { return null; }
     }
 
-    private static IndexSummary Index(GraphRepository repo, IEmbedder e, bool communities = true) =>
-        IndexPipeline.Run(Fixture.SampleProject(), repo, e, Now, communities);
+    private static IndexSummary Index(GraphRepository repo, IEmbedder e, bool communities = true, bool force = false) =>
+        IndexPipeline.Run(Fixture.SampleProject(), repo, e, Now, communities, unityManifestPath: null, force: force);
 
     [Fact]
     public void FullPipeline_PopulatesGraph()
@@ -89,8 +89,8 @@ public sealed class IntegrationTests
         repo.AddSemanticEdge("PlayerController", "Inventory", "COLLABORATES_WITH",
             0.8, "uses items", "test", Now, null, supersede: false);
 
-        // 再インデックスしても意味エッジは残る
-        Index(repo, e);
+        // 再インデックス（強制フル再構築）でも意味エッジは残る
+        Index(repo, e, force: true);
         var ls = repo.ListSemanticEdges();
         Assert.Contains(ls.Rows, r =>
             r[0]?.ToString() == "COLLABORATES_WITH" &&
@@ -135,7 +135,7 @@ public sealed class IntegrationTests
         repo.RawWrite("MATCH (a:Class {key:'Game.Protected'}), (b:Class {name:'Inventory'}) " +
                       "MERGE (a)-[r:RELATES_TO]->(b) SET r.source='semantic'");
 
-        Index(repo, e); // 再構築でライフサイクルが走る
+        Index(repo, e, force: true); // 手動追加ノードはファイル差分に出ないので force で再構築
 
         var ghost = repo.Raw("MATCH (n:Class {key:'Game.Ghost'}) RETURN count(n) AS c");
         Assert.Equal(0L, ghost.Rows[0][0]); // semantic 接続なし → 削除
@@ -152,7 +152,8 @@ public sealed class IntegrationTests
         var repo = new GraphRepository(client);
         var e = new HashingEmbedder();
         Index(repo, e, communities: false);
-        var second = Index(repo, e, communities: false);
+        // 変更なしの再indexは丸ごとスキップされるため、埋め込みキャッシュ自体を見るには --force
+        var second = Index(repo, e, communities: false, force: true);
         // 2回目は型ノードの埋め込みを再計算しない（内容ハッシュ一致）
         Assert.True(second.EmbeddingsSkipped > 0);
         Assert.Equal(0, second.Embedded);

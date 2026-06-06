@@ -1,11 +1,44 @@
 using Ukg.Core;
+using Ukg.Extractors;
 using Xunit;
 
 namespace Ukg.Eval;
 
-/// <summary>埋め込み・コミュニティ・Cypher のユニットテスト（DB不要）。</summary>
+/// <summary>埋め込み・コミュニティ・Cypher・索引状態のユニットテスト（DB不要）。</summary>
 public sealed class UnitTests
 {
+    private static IndexState State(params (string Path, string Hash)[] files) =>
+        new() { Files = files.ToDictionary(f => f.Path, f => f.Hash) };
+
+    [Fact]
+    public void IndexState_Diff_DetectsAddedChangedRemoved()
+    {
+        var prev = State(("a.cs", "h1"), ("b.cs", "h2"), ("c.cs", "h3"));
+        var cur = State(("a.cs", "h1"), ("b.cs", "CHANGED"), ("d.cs", "h4"));
+        var diff = cur.DiffFrom(prev);
+
+        Assert.Equal(new[] { "d.cs" }, diff.Added);
+        Assert.Equal(new[] { "b.cs" }, diff.Changed);
+        Assert.Equal(new[] { "c.cs" }, diff.Removed);
+        Assert.True(diff.HasChanges);
+    }
+
+    [Fact]
+    public void IndexState_Diff_NoChange()
+    {
+        var s = State(("a.cs", "h1"), ("b.cs", "h2"));
+        Assert.False(s.DiffFrom(State(("a.cs", "h1"), ("b.cs", "h2"))).HasChanges);
+    }
+
+    [Fact]
+    public void IndexState_JsonRoundTrip()
+    {
+        var s = State(("a.cs", "h1"));
+        var back = IndexState.FromJson(s.ToJson());
+        Assert.NotNull(back);
+        Assert.Equal("h1", back!.Files["a.cs"]);
+    }
+
     private static double Cosine(float[] a, float[] b)
     {
         double dot = 0; for (int i = 0; i < a.Length; i++) dot += a[i] * b[i];
