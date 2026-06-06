@@ -46,6 +46,54 @@ public sealed class UnitTests
     }
 
     [Fact]
+    public void Embedder_HasStableId()
+    {
+        Assert.Equal("hashing-256", new HashingEmbedder(256).Id);
+        Assert.Equal("hashing-128", new HashingEmbedder(128).Id);
+    }
+
+    [Fact]
+    public void Embedder_DefaultEmbedBatch_MatchesEmbed()
+    {
+        IEmbedder e = new HashingEmbedder(64);
+        var texts = new[] { "alpha beta", "gamma" };
+        var batch = e.EmbedBatch(texts);
+        Assert.Equal(2, batch.Count);
+        Assert.Equal(e.Embed("alpha beta"), batch[0]);
+        Assert.Equal(e.Embed("gamma"), batch[1]);
+    }
+
+    [Fact]
+    public void EmbedderFactory_DefaultsToHashing_AndRespectsConfig()
+    {
+        var saved = (Environment.GetEnvironmentVariable("UKG_EMBEDDER"),
+                     Environment.GetEnvironmentVariable("UKG_EMBED_DIM"));
+        try
+        {
+            Environment.SetEnvironmentVariable("UKG_EMBEDDER", null);
+            Environment.SetEnvironmentVariable("UKG_EMBED_DIM", null);
+            Assert.Equal("hashing-256", Embedders.FromEnvironment().Id);
+
+            Environment.SetEnvironmentVariable("UKG_EMBED_DIM", "512");
+            Assert.Equal("hashing-512", Embedders.FromEnvironment().Id);
+
+            // http はモデル次元(UKG_EMBED_DIM)必須
+            Environment.SetEnvironmentVariable("UKG_EMBEDDER", "http");
+            Environment.SetEnvironmentVariable("UKG_EMBED_DIM", null);
+            Assert.Throws<InvalidOperationException>(() => Embedders.FromEnvironment());
+
+            // http 選択時は HttpEmbedder（id は http:model:dim）
+            Environment.SetEnvironmentVariable("UKG_EMBED_DIM", "1536");
+            Assert.StartsWith("http:", Embedders.FromEnvironment().Id);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("UKG_EMBEDDER", saved.Item1);
+            Environment.SetEnvironmentVariable("UKG_EMBED_DIM", saved.Item2);
+        }
+    }
+
+    [Fact]
     public void Embedder_IsDeterministic()
     {
         var e = new HashingEmbedder(256);

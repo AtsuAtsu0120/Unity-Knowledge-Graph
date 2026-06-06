@@ -117,6 +117,31 @@ public sealed class LiveUpdateTests
     }
 
     [Fact]
+    public void EmbedderSwitch_ReembedsAtNewDimension()
+    {
+        using var client = Connect();
+        if (client is null) return;
+        var repo = new GraphRepository(client);
+
+        IndexPipeline.Run(Fixture.SampleProject(), repo, new HashingEmbedder(256), Now, communities: false);
+
+        // 別次元の埋め込み器へ切替（ファイル不変でも全再埋め込みされる）
+        var e128 = new HashingEmbedder(128);
+        var switched = IndexPipeline.Run(Fixture.SampleProject(), repo, e128, Now, communities: false);
+        Assert.False(switched.UpToDate);
+        Assert.True(switched.Embedded > 0);
+        Assert.Equal(0, switched.EmbeddingsSkipped);
+
+        // 新次元(128)で検索が機能する（索引が作り直されている）
+        var res = repo.Search(e128, "take damage", 3, null);
+        Assert.NotEmpty(res.Rows);
+
+        // 切替後の状態は EmbedderId を保持
+        var state = IndexState.FromJson(repo.LoadIndexState());
+        Assert.Equal("hashing-128", state!.EmbedderId);
+    }
+
+    [Fact]
     public void Status_OnEmptyGraph_DoesNotThrow()
     {
         using var client = Connect();

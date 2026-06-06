@@ -130,3 +130,55 @@
 - **影響**: `IndexState`、`UkgMeta`、`needsReview`/`reviewReason`/`confirmedAt` を追加。
   `status`/`watch`/`reflect`/`sem review`/`sem confirm`/`index --force` を追加。
   読み取りクエリは未作成グラフを「空」として扱うよう `GraphClient` を寛容化。
+
+## ADR-010: 埋め込みは汎用プラグイン構造（OpenAI互換HTTP＋オフライン既定）＋次元安全な再索引
+
+- **文脈**: P1 の意味検索を実戦品質にするには本物の埋め込みが要るが、特定ベンダーに固定したくない。
+  実プロ検証では環境変数で差し替えたい。CI/オフラインはキー無しで動く必要がある。
+- **判断**: `IEmbedder` を一般化し、設定で実装を選ぶ。
+  - `IEmbedder` に `Id`（索引署名）と `EmbedBatch`（バッチ）を追加。`ApplyEmbeddings` はバッチ呼び出しに。
+  - 実装: `HashingEmbedder`（既定・オフライン・無料）と **`HttpEmbedder`（OpenAI互換 `/v1/embeddings`）**。
+    後者1つで OpenAI/Azure/Ollama/text-embeddings-inference/LM Studio 等を URL 設定だけで賄う（＝汎用化）。
+  - `Embedders.FromEnvironment()` が `UKG_EMBEDDER`/`UKG_EMBED_*` から生成。
+  - **次元安全な再索引**: 埋め込み器が変わると次元・ベクトルが非互換になる。`IndexState` に `EmbedderId`
+    を持たせ、変化を検知したら埋め込みとベクトル索引を破棄→新次元で作り直し→全再埋め込みする。
+- **理由**: OpenAI互換APIは事実上の標準で、1実装で多数のプロバイダ（クラウド/ローカル）を覆える。
+  ベンダーロックを避けつつ実プロで本物の検索を試せる。既定はオフラインのままなのでCI/ビルドは無依存。
+- **代替案**: ONNXローカルモデル同梱→依存と配布が重く、汎用化より特定化。当面は HTTP 抽象で汎用化し、
+  必要なら後段で `OnnxEmbedder` を同じ口に足す。
+- **影響**: `Embedding.cs` に `Id`/`EmbedBatch`/`HttpEmbedder`/`Embedders`。`IndexState.EmbedderId`、
+  `GraphRepository` に `ResetEmbeddings`/`DropVectorIndexes`。環境変数:
+  `UKG_EMBEDDER`(hashing|http) `UKG_EMBED_URL` `UKG_EMBED_MODEL` `UKG_EMBED_API_KEY` `UKG_EMBED_DIM`。
+
+## ADR-011: 語彙あいまい検索（candidates）＋ miss シグナルで grep フォールバックを安全化
+
+- **文脈**: KG の存在意義は「エージェント（Claude Code/Codex）が grep せずに即答を得る」こと。
+  だが従来の入口は `find`（完全一致のみ。`PlayerCtrl` で `PlayerController` は引けない）と
+  `search`（ベクトル意味検索。既定 `hashing` はコールドスタート品質が中）の二択で、
+  「正確な名前を知らない／オフラインで精度が物足りない」谷があり、結局 grep に戻りたくなる。
+  さらに「全くヒットしなければ grep にフォールバック」を成立させるには、グラフが
+  **『分かりません』を正直に返す**必要がある（低スコアを無理にヒット扱いすると誤誘導になる）。
+- **判断**:
+  1. **`GraphRepository.Candidates(query, k, label)`** を追加。クエリを区切り文字＋camelCase 境界で
+     トークン分割し、`name/key/doc/summary/signature` を**グラフ側で**部分一致スコアリングする
+     （`reduce`＋`CONTAINS`）。ファイルは一切読まない＝**トークン不要**。
+     score = トークン一致率 ＋ 名前の完全一致(+1.0)/部分一致(+0.5)/前方一致(+0.25) ボーナス。
+  2. **CLI `candidates`** が結果に **miss シグナル**を付す: `confidence` を3段階
+     （`high` = topScore≥1.0 / `low` = 0〜1.0 / `none` = 0件）で返し、段階別に
+     grep フォールバック方針（`recommendation`）を明示する。
+  3. 運用ループを確定：エージェントは `candidates`（語彙・トークン0）→ `confidence:none` の時のみ
+     grep → 理解したら `sem add`/`concept add` で書き戻す。`candidates`＋`search` の二経路で
+     `hashing` の弱点（同義語に弱い）を語彙一致が補完し、**トークン無しで grep 不要**を成立させる。
+  4. 初期化を **`ukg-bootstrap` スキル**として用意。`index` で構造を無料生成 → Claude が
+     コミュニティ/中心ノードを骨格に大まか把握 → `concept add`/`sem add` で意味を種付け →
+     `reflect`/`candidates` で検証。「意味0スタート」を回避する。
+- **理由**: 「意味検索はグラフの責務」をコードで全うする最小の一手（実装規模 S）。abbreviation
+  （`ctrl`→`controller`）は部分一致では解けないが、その場合 `confidence:low` で候補を提示しつつ
+  「的外れなら grep」と正直に誘導する＝嘘をつかない。API トークンは「コールドスタートを最初から
+  高品質にしたい時だけの任意ブースト」に正しく格下げできる。トークン削減は「前払い投資→償却」
+  （意味の書き戻しは1回、再利用は全エージェント・全セッション）。
+- **代替案**: `find` をあいまい化して一本化 → `find`（完全一致）は他経路の前提でもあり別コマンドに分離。
+  全文検索インデックス導入 → 現規模ではスキャンで十分、依存を増やさない。miss 判定を `search` 側にも
+  付与 → 本 ADR では語彙経路に集中（ベクトルの距離閾値較正は次段）。
+- **影響**: `GraphRepository.Candidates`/`Tokenize`/`CandidateLabels`、CLI `candidates`＋`TopScore`、
+  `.claude/skills/ukg-bootstrap/`。統合テスト `Candidates_*` を追加。

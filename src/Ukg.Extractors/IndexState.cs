@@ -11,6 +11,8 @@ public sealed class IndexState
 {
     public int Version { get; init; } = 1;
     public string? IndexedAt { get; init; }
+    /// <summary>埋め込み器の署名（変化したら全再埋め込み, ADR-010）。</summary>
+    public string? EmbedderId { get; set; }
     /// <summary>相対パス → SHA1（グラフに影響する .cs / .meta / 参照系アセット）。</summary>
     public Dictionary<string, string> Files { get; init; } = new(StringComparer.Ordinal);
 

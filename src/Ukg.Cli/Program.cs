@@ -27,6 +27,7 @@ internal static class UkgCli
                 "watch" => Watch(args),
                 "query" => Query(args),
                 "search" => Search(args),
+                "candidates" => Candidates(args),
                 "find" => Lookup(args, (repo, x) => repo.FindByName(x)),
                 "neighbors" => Lookup(args, (repo, x) => repo.Neighbors(x)),
                 "deps" => Lookup(args, (repo, x) => repo.Deps(x)),
@@ -45,7 +46,7 @@ internal static class UkgCli
         }
     }
 
-    private static IEmbedder MakeEmbedder() => new HashingEmbedder(256);
+    private static IEmbedder MakeEmbedder() => Embedders.FromEnvironment();
 
     private static int Index(string[] args)
     {
@@ -67,7 +68,8 @@ internal static class UkgCli
     private static object DoIndex(GraphClient client, string projectPath, string? manifest, bool communities, bool force)
     {
         var repo = new GraphRepository(client);
-        var s = IndexPipeline.Run(projectPath, repo, MakeEmbedder(), NowIso(), communities, manifest, force);
+        var embedder = MakeEmbedder();
+        var s = IndexPipeline.Run(projectPath, repo, embedder, NowIso(), communities, manifest, force);
         if (s.UpToDate)
             return new { ok = true, project = Path.GetFullPath(projectPath), graph = client.GraphName, upToDate = true };
 
@@ -77,6 +79,7 @@ internal static class UkgCli
             ok = true,
             project = Path.GetFullPath(projectPath),
             graph = client.GraphName,
+            embedder = embedder.Id,
             assetSource = s.UsedManifest ? "unity-manifest" : "regex-fallback",
             changedFiles = s.ChangedFiles,
             nodes = s.Nodes,
@@ -103,13 +106,15 @@ internal static class UkgCli
         using var client = GraphClient.Connect();
         var repo = new GraphRepository(client);
 
+        var embedder = MakeEmbedder();
         var current = IndexState.Compute(projectPath, NowIso());
         if (manifest is not null && File.Exists(manifest))
             current.Files["::unity-manifest"] = Hashing.Sha1(File.ReadAllText(manifest));
         var stored = IndexState.FromJson(repo.LoadIndexState());
         var diff = current.DiffFrom(stored);
         bool indexed = stored is not null;
-        bool fresh = indexed && !diff.HasChanges;
+        bool embedderChanged = indexed && stored!.EmbedderId != embedder.Id;
+        bool fresh = indexed && !diff.HasChanges && !embedderChanged;
         int reviewPending = repo.ReviewQueue().Rows.Count;
 
         Write(new
@@ -120,11 +125,14 @@ internal static class UkgCli
             indexed,
             fresh,
             indexedAt = stored?.IndexedAt,
+            embedder = embedder.Id,
+            embedderChanged,
             added = diff.Added,
             changed = diff.Changed,
             removed = diff.Removed,
             reviewPending,
             hint = !indexed ? "ukg index <proj> を実行してください"
+                 : embedderChanged ? "埋め込み器が変わりました。ukg index <proj> で全再埋め込みされます"
                  : !fresh ? "古くなっています。ukg index <proj> で更新してください"
                  : reviewPending > 0 ? "鮮度OK。ただし ukg reflect で要再確認の意味エッジがあります"
                  : "最新です"
@@ -206,6 +214,56 @@ internal static class UkgCli
         var repo = new GraphRepository(client);
         WriteResult(repo.Search(MakeEmbedder(), args[1], k, label));
         return 0;
+    }
+
+    private static int Candidates(string[] args)
+    {
+        if (args.Length < 2) return Fail("usage: ukg candidates \"<text>\" [--k 10] [--label Class]");
+        var opt = ParseFlags(args, 2);
+        int k = opt.TryGetValue("k", out var ks) && int.TryParse(ks, out var kv) ? kv : 10;
+        var label = opt.GetValueOrDefault("label");
+        using var client = GraphClient.Connect();
+        var repo = new GraphRepository(client);
+        var r = repo.Candidates(args[1], k, label);
+
+        // miss シグナル: トップスコアで信頼度を3段階判定し、grep フォールバック方針を明示する（ADR-011）。
+        double? top = TopScore(r);
+        string confidence = top is null ? "none" : top >= 1.0 ? "high" : "low";
+        bool hit = confidence == "high";
+        string recommendation = confidence switch
+        {
+            "high" => "グラフに十分な候補があります。grep は不要です。",
+            "low" => "弱い候補が見つかりました。まず上位候補を確認し、的外れなら grep にフォールバックしてください。",
+            _ => "グラフにヒットがありません。grep にフォールバックし、理解したら ukg sem/concept add で書き戻してください。",
+        };
+        Write(new
+        {
+            ok = true,
+            hit,
+            confidence,
+            topScore = top,
+            recommendation,
+            columns = r.Columns,
+            rows = r.Rows
+        });
+        return 0;
+    }
+
+    /// <summary>QueryResult の score 列の先頭（最大）値を返す。行が無ければ null。</summary>
+    private static double? TopScore(QueryResult r)
+    {
+        if (r.Rows.Count == 0) return null;
+        int idx = -1;
+        for (int i = 0; i < r.Columns.Count; i++)
+            if (r.Columns[i] == "score") { idx = i; break; }
+        if (idx < 0) return null;
+        return r.Rows[0][idx] switch
+        {
+            double d => d,
+            long l => l,
+            int n => n,
+            _ => null
+        };
     }
 
     private static int Impact(string[] args)
@@ -391,7 +449,10 @@ internal static class UkgCli
           query "<cypher>" [--write]    Cypher実行（既定は読み取り専用）
           search "<text>" [--k 10] [--label Class]
                                         意味検索（ベクトル近傍）
-          find <name>                   名前/キーでノード検索
+          candidates "<text>" [--k 10] [--label Class]
+                                        語彙あいまい検索（grep代替/トークン不要）。
+                                        hit/confidence/grepフォールバック推奨を返す
+          find <name>                   名前/キーでノード検索（完全一致）
           neighbors <name>              隣接エッジ（出入り両方向）
           deps <assetPathOrGuid>        Assetの依存（DEPENDS_ON / SCRIPT_OF）
           impact <name> [--depth 4]     変更時の影響範囲（推移的な上流依存）
@@ -403,6 +464,11 @@ internal static class UkgCli
           community                     コミュニティを再計算
           reflect [--min-confidence 0.5]  要レビュー/低confidence/孤児/重複概念/未整理を集約
 
-        Env: UKG_REDIS (default localhost:6379), UKG_GRAPH (default unity)
+        Env:
+          UKG_REDIS (default localhost:6379), UKG_GRAPH (default unity)
+          UKG_EMBEDDER  hashing(既定/オフライン) | http(=openai, OpenAI互換API)
+          http時: UKG_EMBED_URL (既定 https://api.openai.com/v1/embeddings)
+                  UKG_EMBED_MODEL (既定 text-embedding-3-small)
+                  UKG_EMBED_API_KEY, UKG_EMBED_DIM(必須=モデルの出力次元)
         """);
 }
