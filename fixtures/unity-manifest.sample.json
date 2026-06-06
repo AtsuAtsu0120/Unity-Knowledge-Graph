@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "unityVersion": "2022.3.0f1",
+  "generatedAt": "2026-01-01T00:00:00.000Z",
+  "assets": [
+    { "guid": "11111111111111111111111111111111", "path": "Assets/Scripts/IDamageable.cs", "scriptType": "Game.IDamageable", "dependencies": [] },
+    { "guid": "22222222222222222222222222222222", "path": "Assets/Scripts/Character.cs", "scriptType": "Game.Character", "dependencies": [] },
+    { "guid": "33333333333333333333333333333333", "path": "Assets/Scripts/PlayerController.cs", "scriptType": "Game.PlayerController", "dependencies": ["22222222222222222222222222222222", "44444444444444444444444444444444", "66666666666666666666666666666666"] },
+    { "guid": "44444444444444444444444444444444", "path": "Assets/Scripts/Inventory.cs", "scriptType": "Game.Inventory", "dependencies": [] },
+    { "guid": "66666666666666666666666666666666", "path": "Assets/Scripts/Weapon.cs", "scriptType": "Game.Weapon", "dependencies": [] },
+    { "guid": "55555555555555555555555555555555", "path": "Assets/Prefabs/Player.prefab", "scriptType": "", "dependencies": ["33333333333333333333333333333333"] }
+  ]
+}

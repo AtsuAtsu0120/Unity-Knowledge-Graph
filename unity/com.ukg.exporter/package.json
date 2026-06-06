@@ -1,0 +1,11 @@
+{
+  "name": "com.ukg.exporter",
+  "version": "0.1.0",
+  "displayName": "UKG Exporter",
+  "description": "Unity Knowledge Graph (ukg) 用に、AssetDatabase の正確なアセット依存と script GUID→型マップを JSON マニフェストへ書き出す Editor 専用ツール。ukg index --unity-manifest で取り込む。",
+  "unity": "2021.3",
+  "keywords": ["knowledge-graph", "tooling", "dependencies"],
+  "author": {
+    "name": "ukg"
+  }
+}
