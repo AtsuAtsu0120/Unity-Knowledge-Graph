@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -6,15 +7,22 @@ using Ukg.Core;
 namespace Ukg.Extractors;
 
 /// <summary>
-/// Roslyn の構文解析で C# の型宣言と関連を抽出する。
-/// v1 は単一 Compilation を組まず、プロジェクト内の宣言名で型参照を解決する構文ベース方式。
-/// （横断的な厳密解決が必要になれば Assembly-CSharp.csproj を Compilation 化して昇格できる）
+/// Roslyn の <c>Compilation</c>/<c>SemanticModel</c> で C# の型・メソッド・関連を抽出する（P2, ADR-004）。
+/// プロジェクト内型はシンボルで厳密解決し、Unity固有結合(GetComponent&lt;T&gt;等)は
+/// エンジンアセンブリ非依存で動くよう構文パターンで検出する。
 /// </summary>
 public sealed class CSharpExtractor
 {
     private static readonly HashSet<string> IgnoredDirs = new(StringComparer.OrdinalIgnoreCase)
     {
         "Library", "Temp", "Logs", "obj", "Build", "Builds", ".git", ".nuget-packages", ".nuget-http"
+    };
+
+    // GetComponent 系（型引数の型へ USES_COMPONENT を張る Unity メソッド群）
+    private static readonly HashSet<string> ComponentAccessors = new(StringComparer.Ordinal)
+    {
+        "GetComponent", "GetComponents", "GetComponentInChildren", "GetComponentsInChildren",
+        "GetComponentInParent", "GetComponentsInParent", "AddComponent", "TryGetComponent",
     };
 
     public CSharpGraph Extract(string projectRoot)
@@ -28,186 +36,292 @@ public sealed class CSharpExtractor
         }
         if (roots.Count == 0) roots.Add(projectRoot);
 
-        // パス1: 全 .cs を解析して型宣言を収集
-        var decls = new List<TypeDecl>();
-        foreach (var file in EnumerateCs(roots))
+        // パース（並列, P5）
+        var files = EnumerateCs(roots).ToList();
+        var parsed = new ConcurrentBag<(SyntaxTree Tree, string Rel, string Hash)>();
+        Parallel.ForEach(files, file =>
         {
             string text;
             try { text = File.ReadAllText(file); }
-            catch { continue; }
-
-            var tree = CSharpSyntaxTree.ParseText(text);
+            catch { return; }
             var rel = Path.GetRelativePath(projectRoot, file).Replace('\\', '/');
-            foreach (var node in tree.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>())
-            {
-                var (label, ok) = LabelOf(node);
-                if (!ok) continue;
-                var ns = NamespaceOf(node);
-                var key = KeyOf(node, ns);
-                decls.Add(new TypeDecl(node, node.Identifier.Text, ns, key, label, rel));
-            }
-        }
+            var tree = CSharpSyntaxTree.ParseText(text, path: rel);
+            parsed.Add((tree, rel, Hashing.Sha1(text)));
+        });
+        var trees = parsed.OrderBy(t => t.Rel, StringComparer.Ordinal).ToList();
+        var hashByTree = trees.ToDictionary(t => t.Tree, t => t.Hash);
+        var relByTree = trees.ToDictionary(t => t.Tree, t => t.Rel);
 
-        // 名前 -> 宣言 の索引（型参照の解決に使う）
-        var byName = new Dictionary<string, List<TypeDecl>>(StringComparer.Ordinal);
-        foreach (var d in decls)
-        {
-            if (!byName.TryGetValue(d.Name, out var list)) byName[d.Name] = list = new();
-            list.Add(d);
-        }
+        // Compilation（BCL 参照込み）。Unity アセンブリは無くてもよい。
+        var compilation = CSharpCompilation.Create("Assembly-CSharp",
+            trees.Select(t => t.Tree),
+            BclReferences(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         var result = new ExtractionResult();
         var namespaces = new HashSet<string>();
-        var classByFile = new List<ScriptClass>(); // SCRIPT_OF 橋渡し用
+        var classByFile = new List<ScriptClass>();
 
-        // パス2: ノードとエッジを生成
-        foreach (var d in decls)
+        // 宣言シンボル集合（プロジェクト内判定用）と型→キーの索引
+        var declaredTypes = new Dictionary<ISymbol, string>(SymbolEqualityComparer.Default);
+        var typeDecls = new List<(BaseTypeDeclarationSyntax Node, INamedTypeSymbol Symbol, SemanticModel Model, string Rel, string Hash)>();
+
+        foreach (var (tree, rel, hash) in trees)
         {
-            bool isMono = false, isSo = false;
-            ScanBases(d, ref isMono, ref isSo);
+            var model = compilation.GetSemanticModel(tree);
+            foreach (var node in tree.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>())
+            {
+                if (model.GetDeclaredSymbol(node) is not INamedTypeSymbol sym) continue;
+                if (!LabelOf(sym).Ok) continue;
+                var key = Fqn(sym);
+                if (!declaredTypes.ContainsKey(sym)) declaredTypes[sym] = key;
+                typeDecls.Add((node, sym, model, rel, hash));
+            }
+        }
+
+        foreach (var (node, sym, model, rel, hash) in typeDecls)
+        {
+            var (label, _) = LabelOf(sym);
+            var key = Fqn(sym);
+            var ns = sym.ContainingNamespace is { IsGlobalNamespace: false } n ? n.ToDisplayString() : "";
+            var doc = DocSummary(sym);
+            bool isMono = InheritsByName(node, "MonoBehaviour");
+            bool isSo = InheritsByName(node, "ScriptableObject");
+
+            var signature = TypeSignature(node, sym);
+            var refNames = new List<string>();
 
             var props = new List<(string, object?)>
             {
-                (Schema.PropName, d.Name),
-                (Schema.PropPath, d.File),
+                (Schema.PropName, sym.Name),
+                (Schema.PropPath, rel),
+                (Schema.PropContentHash, hash),
             };
-            if (!string.IsNullOrEmpty(d.Namespace)) props.Add(("namespace", d.Namespace));
+            if (!string.IsNullOrEmpty(ns)) props.Add(("namespace", ns));
+            if (!string.IsNullOrEmpty(doc)) props.Add((Schema.PropDoc, doc));
+            if (!string.IsNullOrEmpty(signature)) props.Add((Schema.PropSignature, signature));
             if (isMono) props.Add(("isMonoBehaviour", true));
             if (isSo) props.Add(("isScriptableObject", true));
-            result.AddNode(GraphNode.Create(d.Label, d.Key, props.ToArray()));
 
-            classByFile.Add(new ScriptClass(d.File, d.Name, d.Label, d.Key));
+            classByFile.Add(new ScriptClass(rel, sym.Name, label, key));
 
             // IN_NAMESPACE
-            if (!string.IsNullOrEmpty(d.Namespace))
+            if (!string.IsNullOrEmpty(ns))
             {
-                namespaces.Add(d.Namespace);
-                result.AddEdge(new GraphEdge(Schema.InNamespace, d.Label, d.Key, Schema.Namespace, d.Namespace));
+                namespaces.Add(ns);
+                result.AddEdge(new GraphEdge(Schema.InNamespace, label, key, Schema.Namespace, ns));
             }
 
-            // 継承 / 実装
-            if (d.Node is TypeDeclarationSyntax tds && tds.BaseList is not null)
+            // 継承 / 実装（シンボル解決, プロジェクト内のみ）
+            if (sym.BaseType is { } bt && declaredTypes.TryGetValue(bt.OriginalDefinition, out var btKey))
+                result.AddEdge(new GraphEdge(Schema.Inherits, label, key, LabelOf(bt).Label, btKey));
+            foreach (var iface in sym.Interfaces)
+                if (declaredTypes.TryGetValue(iface.OriginalDefinition, out var ifKey))
+                    result.AddEdge(new GraphEdge(Schema.Implements, label, key, Schema.Interface, ifKey));
+
+            // REFERENCES（フィールド/プロパティ + メソッドの引数/戻り値）
+            var referenced = new HashSet<string>();
+            foreach (var refType in ReferencedTypes(sym))
             {
-                foreach (var bt in tds.BaseList.Types)
-                {
-                    var name = TypeName(bt.Type);
-                    if (name is null) continue;
-                    var target = Resolve(byName, name, d.Namespace);
-                    if (target is null || target.Key == d.Key) continue;
-                    var rel = target.Label == Schema.Interface ? Schema.Implements : Schema.Inherits;
-                    result.AddEdge(new GraphEdge(rel, d.Label, d.Key, target.Label, target.Key));
-                }
+                if (!declaredTypes.TryGetValue(refType.OriginalDefinition, out var tKey)) continue;
+                if (tKey == key) continue;
+                if (!referenced.Add(tKey)) continue;
+                refNames.Add(refType.Name);
+                result.AddEdge(new GraphEdge(Schema.References, label, key, LabelOf(refType).Label, tKey));
             }
 
-            // REFERENCES（フィールド/プロパティ型）
-            if (d.Node is TypeDeclarationSyntax tdecl)
-            {
-                var referenced = new HashSet<string>();
-                foreach (var member in tdecl.Members)
-                {
-                    var typeSyntax = member switch
-                    {
-                        FieldDeclarationSyntax f => f.Declaration.Type,
-                        PropertyDeclarationSyntax p => p.Type,
-                        _ => null
-                    };
-                    if (typeSyntax is null) continue;
-                    foreach (var simple in TypeIdentifiers(typeSyntax))
-                    {
-                        var target = Resolve(byName, simple, d.Namespace);
-                        if (target is null || target.Key == d.Key) continue;
-                        if (!referenced.Add(target.Key)) continue;
-                        result.AddEdge(new GraphEdge(Schema.References, d.Label, d.Key, target.Label, target.Key));
-                    }
-                }
-            }
+            // メソッドノード・CALLS・Unity 結合
+            ExtractMethods(node, sym, model, key, label, declaredTypes, result);
+            ExtractUnityCoupling(node, model, key, label, declaredTypes, result, referenced);
+
+            // 埋め込みテキスト（意味検索の素）
+            props.Add((Schema.PropEmbedText, BuildEmbedText(sym.Name, ns, doc, signature, refNames)));
+
+            result.AddNode(GraphNode.Create(label, key, props.ToArray()));
         }
 
-        // Namespace ノード
         foreach (var ns in namespaces)
             result.AddNode(GraphNode.Create(Schema.Namespace, ns, (Schema.PropName, ns)));
 
-        return new CSharpGraph(result, classByFile);
+        return new CSharpGraph(result, classByFile, hashByTree.Values.ToList());
     }
 
-    private static void ScanBases(TypeDecl d, ref bool isMono, ref bool isSo)
+    // ---- メソッド / 呼び出しグラフ ----
+
+    private void ExtractMethods(
+        BaseTypeDeclarationSyntax typeNode, INamedTypeSymbol typeSym, SemanticModel model,
+        string typeKey, string typeLabel, Dictionary<ISymbol, string> declared, ExtractionResult result)
     {
-        if (d.Node is not TypeDeclarationSyntax tds || tds.BaseList is null) return;
+        foreach (var m in typeNode.DescendantNodes().OfType<MethodDeclarationSyntax>())
+        {
+            // 入れ子型のメソッドは当該型の走査に任せる
+            if (m.FirstAncestorOrSelf<BaseTypeDeclarationSyntax>() != typeNode) continue;
+            if (model.GetDeclaredSymbol(m) is not IMethodSymbol ms) continue;
+            var mKey = MethodKey(ms);
+            var doc = DocSummary(ms);
+
+            var props = new List<(string, object?)>
+            {
+                (Schema.PropName, ms.Name),
+                (Schema.PropSignature, ms.ToDisplayString()),
+                (Schema.PropPath, typeNode.SyntaxTree.FilePath),
+            };
+            if (!string.IsNullOrEmpty(doc)) props.Add((Schema.PropDoc, doc));
+            props.Add((Schema.PropEmbedText, BuildEmbedText(ms.Name, typeSym.Name, doc, ms.ToDisplayString(), Array.Empty<string>())));
+            result.AddNode(GraphNode.Create(Schema.Method, mKey, props.ToArray()));
+            result.AddEdge(new GraphEdge(Schema.DeclaredIn, Schema.Method, mKey, typeLabel, typeKey));
+
+            // CALLS: 本体の呼び出しをシンボル解決
+            if (m.Body is null && m.ExpressionBody is null) continue;
+            foreach (var inv in m.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                if (model.GetSymbolInfo(inv).Symbol is not IMethodSymbol target) continue;
+                if (target.MethodKind != MethodKind.Ordinary) continue;
+                if (!declared.ContainsKey(target.ContainingType.OriginalDefinition)) continue;
+                var targetKey = MethodKey(target.OriginalDefinition);
+                if (targetKey == mKey) continue;
+                result.AddEdge(new GraphEdge(Schema.Calls, Schema.Method, mKey, Schema.Method, targetKey));
+            }
+        }
+    }
+
+    // ---- Unity 結合（構文パターン, ADR-004）----
+
+    private void ExtractUnityCoupling(
+        BaseTypeDeclarationSyntax typeNode, SemanticModel model, string typeKey, string typeLabel,
+        Dictionary<ISymbol, string> declared, ExtractionResult result, HashSet<string> already)
+    {
+        void LinkType(TypeSyntax t)
+        {
+            if (model.GetTypeInfo(t).Type is not INamedTypeSymbol ts) return;
+            if (!declared.TryGetValue(ts.OriginalDefinition, out var tKey) || tKey == typeKey) return;
+            if (!already.Add("uc:" + tKey)) return;
+            result.AddEdge(new GraphEdge(Schema.UsesComponent, typeLabel, typeKey, LabelOf(ts).Label, tKey));
+        }
+
+        // GetComponent<T>() 系
+        foreach (var inv in typeNode.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        {
+            var name = inv.Expression switch
+            {
+                MemberAccessExpressionSyntax ma => ma.Name,
+                GenericNameSyntax g => g,
+                IdentifierNameSyntax id => (SimpleNameSyntax)id,
+                _ => null
+            };
+            if (name is GenericNameSyntax gen && ComponentAccessors.Contains(gen.Identifier.Text)
+                && gen.TypeArgumentList.Arguments.Count == 1)
+                LinkType(gen.TypeArgumentList.Arguments[0]);
+        }
+
+        // [RequireComponent(typeof(T))]
+        foreach (var attr in typeNode.DescendantNodes().OfType<AttributeSyntax>())
+        {
+            if (attr.Name.ToString() is not ("RequireComponent" or "RequireComponentAttribute")) continue;
+            if (attr.ArgumentList is null) continue;
+            foreach (var arg in attr.ArgumentList.Arguments)
+                if (arg.Expression is TypeOfExpressionSyntax to)
+                    LinkType(to.Type);
+        }
+    }
+
+    // ---- ヘルパ ----
+
+    private static IEnumerable<ITypeSymbol> ReferencedTypes(INamedTypeSymbol type)
+    {
+        foreach (var member in type.GetMembers())
+        {
+            switch (member)
+            {
+                case IFieldSymbol f when !f.IsImplicitlyDeclared: yield return f.Type; break;
+                case IPropertySymbol p: yield return p.Type; break;
+                case IMethodSymbol { MethodKind: MethodKind.Ordinary } m:
+                    yield return m.ReturnType;
+                    foreach (var par in m.Parameters) yield return par.Type;
+                    break;
+            }
+        }
+    }
+
+    private static string Fqn(INamedTypeSymbol sym) =>
+        sym.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat.WithGlobalNamespaceStyle(
+            SymbolDisplayGlobalNamespaceStyle.Omitted)).Replace("global::", "");
+
+    private static string MethodKey(IMethodSymbol m)
+    {
+        var paramTypes = string.Join(",", m.Parameters.Select(p => p.Type.Name));
+        return $"{Fqn(m.ContainingType)}.{m.Name}({paramTypes})";
+    }
+
+    private static (string Label, bool Ok) LabelOf(INamedTypeSymbol sym) => sym.TypeKind switch
+    {
+        TypeKind.Interface => (Schema.Interface, true),
+        TypeKind.Struct => (Schema.Struct, true),
+        TypeKind.Enum => (Schema.Enum, true),
+        TypeKind.Class => (Schema.Class, true),
+        _ => (Schema.Class, false),
+    };
+
+    private static (string Label, bool Ok) LabelOf(ITypeSymbol sym) =>
+        sym is INamedTypeSymbol n ? LabelOf(n) : (Schema.Class, false);
+
+    private static bool InheritsByName(BaseTypeDeclarationSyntax node, string baseName)
+    {
+        if (node is not TypeDeclarationSyntax tds || tds.BaseList is null) return false;
         foreach (var bt in tds.BaseList.Types)
         {
-            var n = TypeName(bt.Type);
-            if (n == "MonoBehaviour") isMono = true;
-            else if (n == "ScriptableObject") isSo = true;
-        }
-    }
-
-    private static TypeDecl? Resolve(Dictionary<string, List<TypeDecl>> byName, string simpleName, string currentNs)
-    {
-        if (!byName.TryGetValue(simpleName, out var list) || list.Count == 0) return null;
-        if (list.Count == 1) return list[0];
-        // 同一名前空間を優先
-        var sameNs = list.FirstOrDefault(d => d.Namespace == currentNs);
-        return sameNs ?? list[0];
-    }
-
-    /// <summary>型構文の代表名（最も外側の型名）を返す。</summary>
-    private static string? TypeName(TypeSyntax type) => type switch
-    {
-        IdentifierNameSyntax id => id.Identifier.Text,
-        GenericNameSyntax g => g.Identifier.Text,
-        QualifiedNameSyntax q => TypeName(q.Right),
-        AliasQualifiedNameSyntax a => TypeName(a.Name),
-        NullableTypeSyntax n => TypeName(n.ElementType),
-        ArrayTypeSyntax arr => TypeName(arr.ElementType),
-        _ => null
-    };
-
-    /// <summary>型構文に現れる全ての識別子名（ジェネリック引数含む）を列挙する。</summary>
-    private static IEnumerable<string> TypeIdentifiers(TypeSyntax type)
-    {
-        foreach (var node in type.DescendantNodesAndSelf())
-        {
-            switch (node)
+            var n = bt.Type switch
             {
-                case GenericNameSyntax g: yield return g.Identifier.Text; break;
-                case IdentifierNameSyntax id: yield return id.Identifier.Text; break;
-            }
+                IdentifierNameSyntax id => id.Identifier.Text,
+                QualifiedNameSyntax q => q.Right.Identifier.Text,
+                GenericNameSyntax g => g.Identifier.Text,
+                _ => null
+            };
+            if (n == baseName) return true;
         }
+        return false;
     }
 
-    private static (string Label, bool Ok) LabelOf(BaseTypeDeclarationSyntax node) => node switch
+    private static string? DocSummary(ISymbol sym)
     {
-        InterfaceDeclarationSyntax => (Schema.Interface, true),
-        StructDeclarationSyntax => (Schema.Struct, true),
-        EnumDeclarationSyntax => (Schema.Enum, true),
-        RecordDeclarationSyntax r => (r.ClassOrStructKeyword.IsKind(SyntaxKind.StructKeyword) ? Schema.Struct : Schema.Class, true),
-        ClassDeclarationSyntax => (Schema.Class, true),
-        _ => ("", false)
-    };
-
-    private static string NamespaceOf(SyntaxNode node)
-    {
-        for (var cur = node.Parent; cur is not null; cur = cur.Parent)
-        {
-            switch (cur)
-            {
-                case FileScopedNamespaceDeclarationSyntax f: return f.Name.ToString();
-                case NamespaceDeclarationSyntax n: return n.Name.ToString();
-            }
-        }
-        return "";
+        var xml = sym.GetDocumentationCommentXml();
+        if (string.IsNullOrWhiteSpace(xml)) return null;
+        var start = xml.IndexOf("<summary>", StringComparison.Ordinal);
+        var end = xml.IndexOf("</summary>", StringComparison.Ordinal);
+        string text = start >= 0 && end > start
+            ? xml.Substring(start + 9, end - start - 9)
+            : xml;
+        text = System.Text.RegularExpressions.Regex.Replace(text, "<[^>]+>", " ");
+        text = System.Text.RegularExpressions.Regex.Replace(text, "\\s+", " ").Trim();
+        return text.Length == 0 ? null : (text.Length > 400 ? text[..400] : text);
     }
 
-    private static string KeyOf(BaseTypeDeclarationSyntax node, string ns)
+    private static string TypeSignature(BaseTypeDeclarationSyntax node, INamedTypeSymbol sym)
     {
-        // 入れ子の型を外側から連結し、名前空間を前置して安定キーを作る
-        var names = new Stack<string>();
-        names.Push(node.Identifier.Text);
-        for (var cur = node.Parent; cur is not null; cur = cur.Parent)
-            if (cur is BaseTypeDeclarationSyntax outer)
-                names.Push(outer.Identifier.Text);
-        var typeChain = string.Join(".", names);
-        return string.IsNullOrEmpty(ns) ? typeChain : $"{ns}.{typeChain}";
+        var bases = (node as TypeDeclarationSyntax)?.BaseList?.Types.Select(b => b.Type.ToString());
+        var baseStr = bases is not null && bases.Any() ? " : " + string.Join(", ", bases) : "";
+        return $"{sym.TypeKind.ToString().ToLowerInvariant()} {sym.Name}{baseStr}";
+    }
+
+    private static string BuildEmbedText(string name, string ns, string? doc, string? signature, IReadOnlyList<string> refs)
+    {
+        var parts = new List<string> { name };
+        if (!string.IsNullOrEmpty(ns)) parts.Add(ns);
+        if (!string.IsNullOrEmpty(signature)) parts.Add(signature);
+        if (!string.IsNullOrEmpty(doc)) parts.Add(doc);
+        if (refs.Count > 0) parts.Add("uses " + string.Join(" ", refs));
+        return string.Join(". ", parts);
+    }
+
+    private static IReadOnlyList<MetadataReference> BclReferences()
+    {
+        var refs = new List<MetadataReference>();
+        var tpa = (string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES");
+        if (tpa is not null)
+            foreach (var path in tpa.Split(Path.PathSeparator))
+                if (path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && File.Exists(path))
+                    try { refs.Add(MetadataReference.CreateFromFile(path)); } catch { }
+        return refs;
     }
 
     private IEnumerable<string> EnumerateCs(IEnumerable<string> roots)
@@ -229,13 +343,10 @@ public sealed class CSharpExtractor
             }
         }
     }
-
-    private sealed record TypeDecl(
-        BaseTypeDeclarationSyntax Node, string Name, string Namespace, string Key, string Label, string File);
 }
 
 /// <summary>C# 抽出の出力。SCRIPT_OF 橋渡し用にファイル単位のクラス一覧も公開する。</summary>
-public sealed record CSharpGraph(ExtractionResult Result, IReadOnlyList<ScriptClass> Classes);
+public sealed record CSharpGraph(ExtractionResult Result, IReadOnlyList<ScriptClass> Classes, IReadOnlyList<string> FileHashes);
 
 /// <summary>ファイルに属するクラス（.cs Asset と Class ノードの SCRIPT_OF 接続に使う）。</summary>
 public sealed record ScriptClass(string File, string Name, string Label, string Key);

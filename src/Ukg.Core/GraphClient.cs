@@ -34,17 +34,27 @@ public sealed class GraphClient : IDisposable
         return new GraphClient(redis, graph);
     }
 
+    /// <summary>グラフ全体（ノード・エッジ・索引）を破棄する。存在しなければ無視。</summary>
+    public void DeleteGraph()
+    {
+        try { _db.Execute("GRAPH.DELETE", _graph); } catch { /* 未作成は無視 */ }
+    }
+
     /// <summary>書き込みクエリを実行する。</summary>
-    public QueryResult Query(string cypher) => Run("GRAPH.QUERY", cypher);
+    public QueryResult Query(string cypher, IReadOnlyDictionary<string, object?>? parameters = null)
+        => Run("GRAPH.QUERY", cypher, parameters);
 
     /// <summary>読み取り専用クエリを実行する（書き込みは拒否される）。</summary>
-    public QueryResult ReadOnlyQuery(string cypher) => Run("GRAPH.RO_QUERY", cypher);
+    public QueryResult ReadOnlyQuery(string cypher, IReadOnlyDictionary<string, object?>? parameters = null)
+        => Run("GRAPH.RO_QUERY", cypher, parameters);
 
-    private QueryResult Run(string command, string cypher)
+    private QueryResult Run(string command, string cypher, IReadOnlyDictionary<string, object?>? parameters)
     {
+        // 値はパラメータ前置（CYPHER k=v）で渡し、ボディは静的に保つ（ADR-002）。
+        var full = Cypher.WithParams(cypher, parameters);
         // --compact 形式: 各スカラーが [typeCode, value] で返るため型を正しく判定できる
         // （verbose だと全桁数字の文字列 guid が数値に化けるなどの誤変換が起きる）。
-        var reply = _db.Execute(command, _graph, cypher, "--compact");
+        var reply = _db.Execute(command, _graph, full, "--compact");
         return ParseReply(reply);
     }
 
