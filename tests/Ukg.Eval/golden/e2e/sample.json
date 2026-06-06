@@ -1,0 +1,38 @@
+{
+  "_note": "公開サンプル兼テンプレート（SampleUnityProject）。コミット可。本番は実プロを *.local.json で。",
+  "corpus": "fixtures/SampleUnityProject",
+  "graph": "ukg_e2e_sample",
+  "k": 5,
+  "tasks": [
+    {
+      "id": "loc-damage-contract",
+      "prompt": "ダメージを受ける契約（インターフェース）を定義している型はどれ？ファイルパスかクラス名で答えて。",
+      "lang": "ja", "angle": "semantic", "difficulty": "easy", "exists": true,
+      "gold": { "files": ["Assets/Scripts/IDamageable.cs"], "symbols": ["IDamageable"] }
+    },
+    {
+      "id": "loc-player",
+      "prompt": "Which class represents the player and can both take damage and attack? Answer with the file path or class name.",
+      "lang": "en", "angle": "structure", "difficulty": "easy", "exists": true,
+      "gold": { "files": ["Assets/Scripts/PlayerController.cs"], "symbols": ["PlayerController"] }
+    },
+    {
+      "id": "loc-items",
+      "prompt": "プレイヤーの所持品スロットを管理しているクラスは？ファイルパスで答えて。",
+      "lang": "ja", "angle": "semantic", "difficulty": "easy", "exists": true,
+      "gold": { "files": ["Assets/Scripts/Inventory.cs"], "symbols": ["Inventory"] }
+    },
+    {
+      "id": "loc-weapon-fire",
+      "prompt": "Which component has a Fire() method for shooting? Answer with the class name.",
+      "lang": "en", "angle": "structure", "difficulty": "easy", "exists": true,
+      "gold": { "files": ["Assets/Scripts/Weapon.cs"], "symbols": ["Weapon"] }
+    },
+    {
+      "id": "neg-save",
+      "prompt": "セーブ/ロード（永続化）を担うクラスはどれ？無ければ「存在しない」と答えて。",
+      "lang": "ja", "angle": "semantic", "difficulty": "med", "exists": false,
+      "gold": { "files": [], "symbols": [] }
+    }
+  ]
+}

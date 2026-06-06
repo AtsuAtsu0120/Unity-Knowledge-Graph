@@ -14,3 +14,4 @@ obj/
 # OS
 .DS_Store
 tests/Ukg.Eval/eval-report.txt
+tests/Ukg.Eval/golden/e2e/*.local.json
