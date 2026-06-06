@@ -65,6 +65,38 @@ public sealed class IntegrationTests
     }
 
     [Fact]
+    public void Candidates_FuzzyMatchesByVocabulary_NotExactName()
+    {
+        using var client = Connect();
+        if (client is null) return;
+        var repo = new GraphRepository(client);
+        Index(repo, new HashingEmbedder());
+
+        // 完全一致でないトークン("player","ctrl")でも PlayerController に当たる（grep不要の語彙検索）
+        var res = repo.Candidates("player ctrl", 5, null);
+        Assert.NotEmpty(res.Rows);
+        Assert.Contains(res.Rows, r => r[1]?.ToString() == "PlayerController");
+
+        // 完全一致（小文字）は最上位かつ高スコア（miss シグナルの high 閾値 >= 1.0）
+        var exact = repo.Candidates("playercontroller", 5, null);
+        Assert.Equal("PlayerController", exact.Rows[0][1]?.ToString());
+        Assert.True(Convert.ToDouble(exact.Rows[0][4]) >= 1.0);
+    }
+
+    [Fact]
+    public void Candidates_Miss_ReturnsNoRowsForUnknownVocabulary()
+    {
+        using var client = Connect();
+        if (client is null) return;
+        var repo = new GraphRepository(client);
+        Index(repo, new HashingEmbedder());
+
+        // グラフに無い語彙 → 0件（CLI 側で confidence=none → grep フォールバック）
+        var res = repo.Candidates("zzz_nonexistent_qwxyz", 5, null);
+        Assert.Empty(res.Rows);
+    }
+
+    [Fact]
     public void Impact_IncludesCallAndComponentDependents()
     {
         using var client = Connect();

@@ -14,12 +14,22 @@ public static class IndexPipeline
     {
         // 鮮度判定: 変更が無ければ抽出もDB書き込みもせず高速スキップ（ADR-009）
         var currentState = IndexState.Compute(projectPath, nowIso);
+        currentState.EmbedderId = embedder.Id;
         if (!string.IsNullOrEmpty(unityManifestPath) && File.Exists(unityManifestPath))
             currentState.Files["::unity-manifest"] = Hashing.Sha1(File.ReadAllText(unityManifestPath));
         var previousState = IndexState.FromJson(repo.LoadIndexState());
         var diff = currentState.DiffFrom(previousState);
-        if (!force && previousState is not null && !diff.HasChanges)
+        // 埋め込み器が変わったら全再埋め込み（次元・ベクトル非互換, ADR-010）
+        bool embedderChanged = previousState is not null && previousState.EmbedderId != embedder.Id;
+        if (!force && previousState is not null && !diff.HasChanges && !embedderChanged)
             return IndexSummary.Skipped();
+
+        // 埋め込み器切替: 旧ベクトルと索引を破棄し新次元で作り直す
+        if (embedderChanged)
+        {
+            repo.ResetEmbeddings();
+            repo.DropVectorIndexes();
+        }
 
         var csGraph = new CSharpExtractor().Extract(projectPath);
 

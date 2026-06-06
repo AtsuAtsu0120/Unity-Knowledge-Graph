@@ -17,6 +17,13 @@ public sealed class GraphRepository
         Schema.Namespace, Schema.Asset, Schema.Concept, Schema.Method
     };
 
+    /// <summary>語彙あいまい検索（Candidates）の対象ラベル。</summary>
+    private static readonly string[] CandidateLabels =
+    {
+        Schema.Class, Schema.Interface, Schema.Struct, Schema.Enum,
+        Schema.Namespace, Schema.Asset, Schema.Concept, Schema.Method
+    };
+
     /// <summary>各ラベルの key 索引と、埋め込みラベルのベクトル索引を作成する（既存なら無視）。</summary>
     public void EnsureIndexes(int embeddingDim)
     {
@@ -140,15 +147,12 @@ public sealed class GraphRepository
 
             foreach (var batch in Chunk(pending, 200))
             {
-                var rows = batch.Select(p =>
+                var vecs = embedder.EmbedBatch(batch.Select(p => p.Text).ToList());
+                var rows = batch.Select((p, i) => (object?)new Dictionary<string, object?>
                 {
-                    var vec = embedder.Embed(p.Text);
-                    return (object?)new Dictionary<string, object?>
-                    {
-                        ["k"] = p.Key,
-                        ["e"] = new Vec(vec),
-                        ["h"] = p.Hash,
-                    };
+                    ["k"] = p.Key,
+                    ["e"] = new Vec(vecs[i]),
+                    ["h"] = p.Hash,
                 });
                 _client.Query(
                     $"UNWIND {Cypher.List(rows)} AS row MATCH (n:{label} {{{Schema.PropKey}: row.k}}) " +
@@ -157,6 +161,19 @@ public sealed class GraphRepository
             }
         }
         return new EmbeddingStats(embedded, skipped);
+    }
+
+    /// <summary>全ノードの埋め込みと埋め込みハッシュを除去する（埋め込み器切替時, ADR-010）。</summary>
+    public void ResetEmbeddings() =>
+        _client.Query(
+            $"MATCH (n) WHERE n.{Schema.PropEmbedding} IS NOT NULL OR n.{Schema.PropEmbedHash} IS NOT NULL " +
+            $"REMOVE n.{Schema.PropEmbedding}, n.{Schema.PropEmbedHash}");
+
+    /// <summary>ベクトル索引を破棄する（次元変更に伴う作り直しの前段, ADR-010）。</summary>
+    public void DropVectorIndexes()
+    {
+        foreach (var label in Schema.EmbeddableLabels)
+            TryQuery($"DROP VECTOR INDEX FOR (n:{Cypher.Ident(label)}) ON (n.{Schema.PropEmbedding})");
     }
 
     /// <summary>意味検索。各埋め込みラベルでベクトル近傍を取り、全体で上位 k を返す。</summary>
@@ -188,6 +205,70 @@ public sealed class GraphRepository
             .OrderBy(r => r.Length > 4 && r[4] is double d ? d : double.MaxValue)
             .Take(k).ToList();
         return new QueryResult(new[] { "label", "name", "key", "path", "distance" }, ordered, Array.Empty<string>());
+    }
+
+    /// <summary>
+    /// 語彙/構造のあいまい検索（grep の代替・トークン不要）。クエリをトークン分割し、
+    /// <c>name/key/doc/summary/signature</c> をグラフ側で部分一致スコアリングする。ファイルは一切読まない。
+    /// 返り値 columns: label, name, key, path, score（score 降順, 0..3 程度）。
+    /// </summary>
+    public QueryResult Candidates(string query, int k, string? labelFilter)
+    {
+        var q = (query ?? "").Trim().ToLowerInvariant();
+        var tokens = Tokenize(query ?? "");
+        if (tokens.Count == 0 && q.Length > 0) tokens.Add(q);
+        if (tokens.Count == 0)
+            return new QueryResult(new[] { "label", "name", "key", "path", "score" }, new List<object?[]>(), Array.Empty<string>());
+
+        var labels = labelFilter is not null
+            ? CandidateLabels.Where(l => l.Equals(labelFilter, StringComparison.OrdinalIgnoreCase)).ToArray()
+            : CandidateLabels;
+        if (labels.Length == 0) labels = CandidateLabels;
+
+        var p = new Dictionary<string, object?>
+        {
+            ["q"] = q,
+            ["toks"] = tokens.Select(t => (object?)t).ToList(),
+            ["labels"] = labels.Select(l => (object?)l).ToList(),
+            ["k"] = k,
+        };
+
+        // score = トークン一致率 + 名前の完全一致/部分一致/前方一致ボーナス
+        return _client.ReadOnlyQuery(
+            $"MATCH (n) WHERE any(l IN labels(n) WHERE l IN $labels) " +
+            $"AND coalesce(n.{Schema.PropStale}, false) = false " +
+            $"WITH n, toLower(coalesce(n.{Schema.PropName}, '')) AS lname, " +
+            $"toLower(coalesce(n.{Schema.PropName}, '') + ' ' + coalesce(n.{Schema.PropKey}, '') + ' ' + " +
+            $"coalesce(n.{Schema.PropDoc}, '') + ' ' + coalesce(n.{Schema.PropSummary}, '') + ' ' + " +
+            $"coalesce(n.{Schema.PropSignature}, '')) AS hay " +
+            $"WITH n, lname, reduce(s = 0, t IN $toks | s + CASE WHEN hay CONTAINS t THEN 1 ELSE 0 END) AS hits " +
+            $"WHERE hits > 0 OR lname CONTAINS $q " +
+            $"WITH n, lname, " +
+            $"toFloat(hits) / size($toks) " +
+            $"+ CASE WHEN lname = $q THEN 1.0 ELSE 0.0 END " +
+            $"+ CASE WHEN lname CONTAINS $q THEN 0.5 ELSE 0.0 END " +
+            $"+ CASE WHEN lname STARTS WITH $q THEN 0.25 ELSE 0.0 END AS score " +
+            $"RETURN labels(n)[0] AS label, n.{Schema.PropName} AS name, n.{Schema.PropKey} AS key, " +
+            $"n.{Schema.PropPath} AS path, score " +
+            $"ORDER BY score DESC LIMIT $k", p);
+    }
+
+    /// <summary>クエリ文字列をトークン分割する（区切り文字＋camelCase 境界, 2文字以上, 小文字化, 重複排除）。</summary>
+    private static List<string> Tokenize(string s)
+    {
+        var tokens = new List<string>();
+        var cur = new System.Text.StringBuilder();
+        void Flush() { if (cur.Length > 0) { tokens.Add(cur.ToString().ToLowerInvariant()); cur.Clear(); } }
+        char prev = '\0';
+        foreach (var ch in s)
+        {
+            if (!char.IsLetterOrDigit(ch)) { Flush(); prev = ch; continue; }
+            if (cur.Length > 0 && char.IsUpper(ch) && char.IsLower(prev)) Flush(); // camelCase 境界
+            cur.Append(ch);
+            prev = ch;
+        }
+        Flush();
+        return tokens.Where(t => t.Length >= 2).Distinct(StringComparer.Ordinal).ToList();
     }
 
     // ---- 定型クエリ ----
