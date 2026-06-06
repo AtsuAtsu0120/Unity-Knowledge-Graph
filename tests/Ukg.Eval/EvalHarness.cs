@@ -23,7 +23,11 @@ public sealed class EvalHarness
 {
     private const string Now = "2026-01-01T00:00:00.0000000Z";
     private readonly ITestOutputHelper _out;
+    private readonly List<string> _report = new();
     public EvalHarness(ITestOutputHelper o) => _out = o;
+
+    /// <summary>テストログ(CI用)とレポートバッファ(ファイル出力用)の両方に書く。</summary>
+    private void Log(string line) { _out.WriteLine(line); _report.Add(line); }
 
     // ---- 回帰ゲート（大きな劣化を検知する保守的な下限。改善したら引き上げる）----
     private const double ColdStartRecallFloor = 0.60; // 構造クエリは種付け無しでも引けるはず
@@ -35,6 +39,7 @@ public sealed class EvalHarness
         var client = Connect();
         if (client is null) { _out.WriteLine("[skip] FalkorDB 未起動"); return; }
         using var _ = client;
+        Log($"ukg 検索品質スコアカード  (corpus: SampleUnityProject)");
 
         var golden = LoadGolden();
         var curation = LoadCuration();
@@ -52,10 +57,15 @@ public sealed class EvalHarness
 
         // --- lift（意味づけの貢献）---
         var lift = curated.RecallAtK - cold.RecallAtK;
-        _out.WriteLine("");
-        _out.WriteLine($"━━ 意味づけ（種付け）の効果 ━━");
-        _out.WriteLine($"  正解率: {cold.RecallAtK:P0} → {curated.RecallAtK:P0}  （+{lift:P0} ポイント）");
-        _out.WriteLine($"  ※ コードもエンジンも同じ条件なので、この上昇分はすべて「意味づけ」の貢献");
+        Log("");
+        Log($"━━ 意味づけ（種付け）の効果 ━━");
+        Log($"  正解率: {cold.RecallAtK:P0} → {curated.RecallAtK:P0}  （+{lift:P0} ポイント）");
+        Log($"  ※ コードもエンジンも同じ条件なので、この上昇分はすべて「意味づけ」の貢献");
+
+        // --- レポートをファイルにも書き出す（detailed ロガー無しでも見れるように）---
+        var reportPath = Path.Combine(Fixture.RepoRoot(), "tests", "Ukg.Eval", "eval-report.txt");
+        File.WriteAllText(reportPath, string.Join("\n", _report) + "\n");
+        _out.WriteLine($"\n[レポート保存] {reportPath}");
 
         // ---- 回帰ゲート ----
         Assert.Equal(0, cold.FalseHigh);     // false-high（自信満々の誤答）は最悪。常に0であるべき
@@ -139,14 +149,14 @@ public sealed class EvalHarness
 
     private void Print(string lane, Scorecard c)
     {
-        _out.WriteLine("");
-        _out.WriteLine($"━━ {lane} ━━");
-        _out.WriteLine($"  正解率　　　　　　 : {c.PosHit}/{c.PosTotal}問 ({c.RecallAtK:P0})   ← 上位{c.K}件に正解が入っていた割合");
-        _out.WriteLine($"  正解の上位さ　　　 : {c.Mrr:F2} / 1.00          ← 1に近いほど正解が上の方に来る");
-        _out.WriteLine($"  「該当なし」を当てた: {c.CorrectReject}/{c.NegTotal}問          ← 存在しない物を正しく門前払いできた数");
-        _out.WriteLine($"  自信満々の誤答　　 : {c.FalseHigh}件 {(c.FalseHigh == 0 ? "✓(理想)" : "✗ 要修正")}        ← 最悪のミス。常に0であるべき");
-        if (c.FailedPositives.Count > 0) _out.WriteLine("  取りこぼした問い　 : " + string.Join(" / ", c.FailedPositives));
-        if (c.FalseHighList.Count > 0) _out.WriteLine("  ⚠ 自信満々で外した : " + string.Join(" / ", c.FalseHighList));
+        Log("");
+        Log($"━━ {lane} ━━");
+        Log($"  正解率　　　　　　 : {c.PosHit}/{c.PosTotal}問 ({c.RecallAtK:P0})   ← 上位{c.K}件に正解が入っていた割合");
+        Log($"  正解の上位さ　　　 : {c.Mrr:F2} / 1.00          ← 1に近いほど正解が上の方に来る");
+        Log($"  「該当なし」を当てた: {c.CorrectReject}/{c.NegTotal}問          ← 存在しない物を正しく門前払いできた数");
+        Log($"  自信満々の誤答　　 : {c.FalseHigh}件 {(c.FalseHigh == 0 ? "✓(理想)" : "✗ 要修正")}        ← 最悪のミス。常に0であるべき");
+        if (c.FailedPositives.Count > 0) Log("  取りこぼした問い　 : " + string.Join(" / ", c.FailedPositives));
+        if (c.FalseHighList.Count > 0) Log("  ⚠ 自信満々で外した : " + string.Join(" / ", c.FalseHighList));
     }
 
     private static int IndexOf(IReadOnlyList<string> cols, string name)

@@ -13,3 +13,4 @@ obj/
 
 # OS
 .DS_Store
+tests/Ukg.Eval/eval-report.txt
