@@ -1,0 +1,26 @@
+{
+  "corpus": "fixtures/SampleUnityProject",
+  "k": 5,
+  "queries": [
+    { "id": "lex-player",    "query": "player controller", "type": "lexical",  "lang": "en", "should_hit": true,  "targets": "structure", "expected": ["Game.PlayerController"] },
+    { "id": "lex-weapon",    "query": "weapon",            "type": "lexical",  "lang": "en", "should_hit": true,  "targets": "structure", "expected": ["Game.Weapon"] },
+    { "id": "lex-inventory", "query": "inventory",         "type": "lexical",  "lang": "en", "should_hit": true,  "targets": "structure", "expected": ["Game.Inventory"] },
+    { "id": "lex-takedamage","query": "take damage",       "type": "lexical",  "lang": "en", "should_hit": true,  "targets": "structure", "expected": ["Game.PlayerController.TakeDamage(Int32)", "Game.IDamageable.TakeDamage(Int32)"] },
+    { "id": "lex-attack",    "query": "attack",            "type": "lexical",  "lang": "en", "should_hit": true,  "targets": "structure", "expected": ["Game.PlayerController.Attack()"] },
+    { "id": "lex-fire",      "query": "fire weapon",       "type": "lexical",  "lang": "en", "should_hit": true,  "targets": "structure", "expected": ["Game.Weapon.Fire()", "Game.Weapon"] },
+
+    { "id": "lex-ja-items",  "query": "所持品",            "type": "lexical",  "lang": "ja", "should_hit": true,  "targets": "structure", "expected": ["Game.Inventory"] },
+    { "id": "lex-ja-weapon", "query": "武器",              "type": "lexical",  "lang": "ja", "should_hit": true,  "targets": "structure", "expected": ["Game.Weapon"] },
+
+    { "id": "sem-damage",    "query": "take damage to health", "type": "semantic", "lang": "en", "should_hit": true, "targets": "structure", "expected": ["Game.IDamageable", "Game.PlayerController.TakeDamage(Int32)", "Game.IDamageable.TakeDamage(Int32)"] },
+    { "id": "sem-items",     "query": "manage items the player owns", "type": "semantic", "lang": "en", "should_hit": true, "targets": "structure", "expected": ["Game.Inventory", "Game.Inventory.Add(Int32)"] },
+
+    { "id": "neg-db",        "query": "database connection pool", "type": "lexical", "lang": "en", "should_hit": false, "targets": "none", "expected": [] },
+    { "id": "neg-net",       "query": "network multiplayer sync", "type": "lexical", "lang": "en", "should_hit": false, "targets": "none", "expected": [] },
+    { "id": "neg-ja-puyo",   "query": "落ち物 パズル",      "type": "lexical",  "lang": "ja", "should_hit": false, "targets": "none", "expected": [] },
+
+    { "id": "cur-combat",    "query": "combat system",     "type": "lexical",  "lang": "en", "should_hit": true,  "targets": "semantic-layer", "expected": ["concept:Combat"] },
+    { "id": "cur-combat-sem","query": "what handles combat and damage responsibility", "type": "semantic", "lang": "en", "should_hit": true, "targets": "semantic-layer", "expected": ["concept:Combat"] },
+    { "id": "cur-items",     "query": "item management",   "type": "lexical",  "lang": "en", "should_hit": true,  "targets": "semantic-layer", "expected": ["concept:ItemManagement"] }
+  ]
+}

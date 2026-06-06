@@ -1,0 +1,13 @@
+{
+  "note": "SampleUnityProject 用の固定 curation スクリプト（再現可能な定数）。意味づけ/スキルを評価するレーンで、エンジンとコーパスを固定したまま適用する。英語で記述（ADR-011 方針）。",
+  "concepts": [
+    { "name": "Combat", "summary": "Combat subsystem: taking damage and managing character health" },
+    { "name": "ItemManagement", "summary": "Item management: the player's inventory slots and picking up items" }
+  ],
+  "edges": [
+    { "from": "Combat", "to": "Game.IDamageable", "rel": "RESPONSIBLE_FOR", "why": "defines the damage-taking contract", "confidence": 0.8 },
+    { "from": "Combat", "to": "Game.Character", "rel": "COLLABORATES_WITH", "why": "health state lives on Character", "confidence": 0.7 },
+    { "from": "Combat", "to": "Game.PlayerController.TakeDamage(Int32)", "rel": "RESPONSIBLE_FOR", "why": "concrete damage application", "confidence": 0.75 },
+    { "from": "ItemManagement", "to": "Game.Inventory", "rel": "RESPONSIBLE_FOR", "why": "manages inventory slots", "confidence": 0.8 }
+  ]
+}

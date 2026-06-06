@@ -32,7 +32,8 @@ unity/
 skills/
   unity-knowledge-graph/SKILL.md   Claude向け手続き知識
 tests/
-  Ukg.Eval/         抽出ゴールデン＋FalkorDB統合テスト
+  Ukg.Eval/         抽出ゴールデン＋FalkorDB統合テスト＋検索品質eval(EvalHarness, golden/)
+                    評価方法は docs/EVAL.md（内在/外在・3レーン・lift）を参照
 fixtures/
   SampleUnityProject/  E2E検証用の小さなサンプル
 docs/

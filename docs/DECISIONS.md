@@ -182,3 +182,24 @@
   付与 → 本 ADR では語彙経路に集中（ベクトルの距離閾値較正は次段）。
 - **影響**: `GraphRepository.Candidates`/`Tokenize`/`CandidateLabels`、CLI `candidates`＋`TopScore`、
   `.claude/skills/ukg-bootstrap/`。統合テスト `Candidates_*` を追加。
+
+## ADR-012: 評価は内在/外在を分け、3レーンでエンジンと意味づけを切り分ける
+
+- **文脈**: ukg を継続的に評価・改善したいが、検索 Recall は `f(エンジン, コーパス, 種付け, embedder)`
+  であり、素のスコアでは「ukg が良くなった」のか「グラフが育っただけ」かを区別できない（交絡）。
+  さらに意味層は LLM/スキルが手で育てるため、curation の良し悪しも独立に測りたい。
+- **判断**:
+  1. **内在評価（再現可能・CIゲート）と外在評価（E2Eのトークン/成功率・定期）を分離**。
+  2. 内在を**3レーン**で測る（`tests/Ukg.Eval/EvalHarness.cs`, `docs/EVAL.md`）:
+     - レーンA コールドスタート（種付け0）= 純エンジン
+     - レーンB 種付け後（固定 `curation.json`）= 総合点、**lift = B−A = 意味づけ貢献**
+     - レーンC スキル評価（半自動）= スキルを N 回回して **lift/token** と分散
+  3. **種付けをコード化**（`golden/curation.json`）して定数化し、変数を1つずつ動かせるようにする。
+  4. **ゴールデンクエリ集**（`golden/queries.json`, 正例/負例/curation依存）で Recall@k / MRR /
+     miss 混同行列を採点。**false-high は常に 0 を要求**（自信満々の誤答が最悪）。回帰は floor でゲート。
+  5. 抽出 precision/recall・コールドスタート Recall・miss較正・性能は**curation 非依存**なので、
+     「ukg 自体の改善」はここを主軸に追う（グラフ成長と完全に切り離せる）。
+- **理由**: 切り分けることで初めて「どのレバーが効いたか」が分かり、エンジン／意味づけ／成長を
+  それぞれ独立に改善できる。総合点（レーンB・E2E）も併せ持つので全体像は失わない。
+- **代替案**: 単一の Recall 指標 → 交絡で改善判断不能。E2Eのみ → 高コスト・非決定的で日常運用に不向き。
+- **影響**: `tests/Ukg.Eval/golden/{queries,curation}.json`、`EvalHarness.cs`、`docs/EVAL.md` を追加。
