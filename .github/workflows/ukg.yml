@@ -1,0 +1,38 @@
+name: ukg
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test-index:
+    runs-on: ubuntu-latest
+    services:
+      falkordb:
+        image: falkordb/falkordb:latest
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Build
+        run: dotnet build -c Release --nologo
+
+      - name: Test (extraction golden + FalkorDB integration)
+        run: dotnet test -c Release --nologo
+        env:
+          UKG_REDIS: localhost:6379
+
+      - name: Index fixture (smoke; verifies the graph builds end-to-end)
+        run: dotnet run -c Release --project src/Ukg.Cli -- index fixtures/SampleUnityProject
+        env:
+          UKG_REDIS: localhost:6379
+          UKG_GRAPH: ci
+
+      # 実運用でチーム共有グラフを更新する場合は、ここで共有 FalkorDB を指す UKG_REDIS を
+      # secrets から渡し、index を回す（デプロイ依存なので雛形には含めない）。

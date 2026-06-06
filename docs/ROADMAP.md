@@ -24,6 +24,7 @@
 | P3 | ✅ 完了 | `Concept`生成(`concept add`)、LPAコミュニティ検出、機械要約、`PART_OF`束ね |
 | P4 | ✅ 完了 | `createdAt`/`validFrom`/`invalidAt`/`commitSha`、`--supersede`論理無効化、confidence降順 |
 | P5 | 🟡 部分 | 並列パース＋増分埋め込み＋`contentHash`保存（フルなファイル単位差分更新は次段, ADR-007） |
+| ライブ更新 | ✅ 完了 | 索引状態＋増分no-op / stale伝播(needsReview) / `status`鮮度ガード / `reflect`リフレクション / `watch`・hooks・CI（ADR-009） |
 
 ## 全体像
 

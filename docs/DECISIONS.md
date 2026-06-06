@@ -106,3 +106,27 @@
 - **影響**: 新規 `unity/com.ukg.exporter/`（Editor専用）。`Ukg.Extractors` に `UnityManifest` 取り込みと
   マニフェスト優先のアセット層を追加。マニフェスト無しの既存挙動は不変（後方互換）。
   運用フロー（バッチ生成→index）は ROADMAP/README に記載。
+
+## ADR-009: ライブ更新モデル — 構造はイベント駆動で自動、意味はLLMが手入れ
+
+- **文脈**: 旧来は手動 `index` のみで鮮度が運用依存。最前線（Graphiti の増分・temporal、
+  Sourcegraph/Glean のコミット駆動増分、agentic memory のリフレクション）に倣い、鮮度を
+  仕組みで担保したい。ただし「LLMが全部更新」はアンチパターン（構造は決定的・無料な解析で出せる）。
+- **判断**: 4点を実装し、**構造＝自動/決定的、意味＝LLMが継続キュレーション**で役割分担する。
+  1. **増分no-op＋索引状態**: 追跡ファイルの内容ハッシュ集合を `UkgMeta` ノードに保存。
+     `index` は前回と差分が無ければ抽出もDB書き込みもせず即スキップ（`upToDate`）。`--force` で強制。
+  2. **stale伝播**: 変更/追加された `.cs` に属する型に係る**LLM由来の意味エッジを `needsReview` 化**。
+     消えた型は既存のライフサイクルで `stale`。両者を `sem review`/`reflect` で surface。
+  3. **読み取り時ガード**: `ukg status` が鮮度（`fresh`/`reviewPending`）を返す。SKILL は
+     **構造の質問前に status→必要なら index** を Claude に課す（JIT 自己修復）。
+  4. **リフレクション**: `ukg reflect` が要再確認/低confidence/孤児/重複概念/未整理コミュニティを集約。
+     `sem confirm` で再確認、`sem add --supersede` で更新。LLM が意味層を定期的に手入れする。
+  - **トリガ**: `ukg watch`（FileSystemWatcher＋デバウンス）、git hooks（`hooks/`）、CI（`.github/workflows/ukg.yml`）。
+- **理由**: 構造は Roslyn が即時・厳密・無料に出せるのでイベント駆動で十分。LLM の価値は
+  「コードから自明でない意味」の付与と、構造変化に追従した**意味の再確認/統合**。鮮度は
+  バイテンポラル＋status＋stale伝播で「嘘をつかない」状態を保つ。
+- **代替案**: フル部分グラフ更新（per-file patch）→ エッジが跨り正確性リスク大、no-op＋差分embedで
+  実コストはほぼ取れるため見送り。LLMに構造も更新させる→遅い/非決定的/幻覚で却下。
+- **影響**: `IndexState`、`UkgMeta`、`needsReview`/`reviewReason`/`confirmedAt` を追加。
+  `status`/`watch`/`reflect`/`sem review`/`sem confirm`/`index --force` を追加。
+  読み取りクエリは未作成グラフを「空」として扱うよう `GraphClient` を寛容化。

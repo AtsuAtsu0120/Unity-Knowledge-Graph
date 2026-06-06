@@ -15,6 +15,7 @@ public static class Schema
     public const string Asset = "Asset";
     public const string Concept = "Concept";
     public const string Method = "Method";     // P2: メソッド単位ノード
+    public const string Meta = "UkgMeta";      // 索引状態などの内部メタ（グラフに1つ）
 
     // 静的エッジ（source=static）
     public const string Inherits = "INHERITS";        // Class -> Class
@@ -66,6 +67,12 @@ public static class Schema
     public const string PropValidFrom = "validFrom";   // 有効開始
     public const string PropInvalidAt = "invalidAt";   // 論理無効化時刻（存在＝無効）
     public const string PropCommitSha = "commitSha";   // 根拠コミット
+
+    // ライブ更新（ADR-009）
+    public const string PropState = "state";           // 索引状態(JSON, UkgMeta)
+    public const string PropNeedsReview = "needsReview"; // 構造変更で要再確認の意味エッジ
+    public const string PropReviewReason = "reviewReason";
+    public const string PropConfirmedAt = "confirmedAt"; // 再確認した時刻
 
     // source 値
     public const string SourceStatic = "static";

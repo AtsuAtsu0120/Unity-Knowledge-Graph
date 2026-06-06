@@ -10,8 +10,17 @@ public static class IndexPipeline
 {
     public static IndexSummary Run(
         string projectPath, GraphRepository repo, IEmbedder embedder, string nowIso, bool communities,
-        string? unityManifestPath = null)
+        string? unityManifestPath = null, bool force = false)
     {
+        // 鮮度判定: 変更が無ければ抽出もDB書き込みもせず高速スキップ（ADR-009）
+        var currentState = IndexState.Compute(projectPath, nowIso);
+        if (!string.IsNullOrEmpty(unityManifestPath) && File.Exists(unityManifestPath))
+            currentState.Files["::unity-manifest"] = Hashing.Sha1(File.ReadAllText(unityManifestPath));
+        var previousState = IndexState.FromJson(repo.LoadIndexState());
+        var diff = currentState.DiffFrom(previousState);
+        if (!force && previousState is not null && !diff.HasChanges)
+            return IndexSummary.Skipped();
+
         var csGraph = new CSharpExtractor().Extract(projectPath);
 
         var merged = new ExtractionResult();
@@ -50,7 +59,25 @@ public static class IndexPipeline
         }
 
         var emb = repo.ApplyEmbeddings(embedder);
-        return new IndexSummary(stats.Nodes, stats.Edges, stats.Removed, stats.Staled, scriptOf, communityCount, emb.Embedded, emb.Skipped, usedManifest);
+
+        // stale伝播: 変更/追加された .cs に属する型の意味エッジを needsReview 化（ADR-009）
+        int flagged = 0;
+        if (previousState is not null)
+        {
+            var fileToKeys = csGraph.Classes.GroupBy(c => c.File)
+                .ToDictionary(g => g.Key, g => g.Select(c => c.Key).ToList());
+            var changedKeys = diff.AddedAndChanged
+                .Where(p => p.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+                .SelectMany(p => fileToKeys.TryGetValue(p, out var ks) ? ks : Enumerable.Empty<string>())
+                .Distinct().ToList();
+            flagged = repo.FlagSemanticReview(changedKeys, "source changed");
+        }
+
+        repo.SaveIndexState(currentState.ToJson(), nowIso);
+
+        return new IndexSummary(stats.Nodes, stats.Edges, stats.Removed, stats.Staled, scriptOf,
+            communityCount, emb.Embedded, emb.Skipped, usedManifest,
+            UpToDate: false, ChangedFiles: diff.Added.Count + diff.Changed.Count + diff.Removed.Count, FlaggedForReview: flagged);
     }
 
     /// <summary>マニフェスト不在時の SCRIPT_OF 橋渡し（ファイル名一致のフォールバック）。</summary>
@@ -75,4 +102,9 @@ public static class IndexPipeline
 
 public sealed record IndexSummary(
     int Nodes, int Edges, int Removed, int Staled, int ScriptOfEdges, int Communities, int Embedded, int EmbeddingsSkipped,
-    bool UsedManifest);
+    bool UsedManifest, bool UpToDate = false, int ChangedFiles = 0, int FlaggedForReview = 0)
+{
+    /// <summary>変更なしで処理をスキップしたときのサマリ。</summary>
+    public static IndexSummary Skipped() =>
+        new(0, 0, 0, 0, 0, 0, 0, 0, false, UpToDate: true, ChangedFiles: 0, FlaggedForReview: 0);
+}

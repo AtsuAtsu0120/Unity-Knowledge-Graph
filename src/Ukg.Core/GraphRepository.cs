@@ -311,6 +311,87 @@ public sealed class GraphRepository
             new Dictionary<string, object?> { ["key"] = "concept:" + name });
     }
 
+    // ---- ライブ更新（ADR-009）: 索引状態・stale伝播・レビュー・リフレクション ----
+
+    /// <summary>索引状態(JSON)を UkgMeta ノードに保存する。</summary>
+    public void SaveIndexState(string stateJson, string nowIso) =>
+        _client.Query(
+            $"MERGE (m:{Schema.Meta} {{{Schema.PropKey}: 'index'}}) " +
+            $"SET m.{Schema.PropState} = $state, m.indexedAt = $now",
+            new Dictionary<string, object?> { ["state"] = stateJson, ["now"] = nowIso });
+
+    /// <summary>保存済み索引状態(JSON)を取り出す（無ければ null）。</summary>
+    public string? LoadIndexState()
+    {
+        var r = _client.ReadOnlyQuery(
+            $"MATCH (m:{Schema.Meta} {{{Schema.PropKey}: 'index'}}) RETURN m.{Schema.PropState} AS s");
+        return r.Rows.Count > 0 ? r.Rows[0][0]?.ToString() : null;
+    }
+
+    /// <summary>変更された型キーに係る LLM 由来の意味エッジを needsReview 化する（stale伝播）。</summary>
+    public int FlagSemanticReview(IReadOnlyCollection<string> changedKeys, string reason)
+    {
+        if (changedKeys.Count == 0) return 0;
+        var keys = Cypher.List(changedKeys.Select(k => (object?)k));
+        var r = _client.Query(
+            $"UNWIND {keys} AS k MATCH (n {{{Schema.PropKey}: k}})-[r {{{Schema.PropSource}: '{Schema.SourceSemantic}'}}]-(m) " +
+            $"WHERE coalesce(r.{Schema.PropAuthor}, '') <> 'community-detection' AND r.{Schema.PropInvalidAt} IS NULL " +
+            $"SET r.{Schema.PropNeedsReview} = true, r.{Schema.PropReviewReason} = $reason " +
+            $"RETURN count(r) AS c",
+            new Dictionary<string, object?> { ["reason"] = reason });
+        return (int)FirstLong(r);
+    }
+
+    /// <summary>要再確認の意味エッジ（needsReview もしくは端点が stale）を返す。</summary>
+    public QueryResult ReviewQueue() =>
+        _client.ReadOnlyQuery(
+            $"MATCH (a)-[r]->(b) WHERE r.{Schema.PropSource} = '{Schema.SourceSemantic}' AND r.{Schema.PropInvalidAt} IS NULL " +
+            $"AND (coalesce(r.{Schema.PropNeedsReview}, false) = true OR coalesce(a.{Schema.PropStale}, false) = true " +
+            $"OR coalesce(b.{Schema.PropStale}, false) = true) " +
+            $"RETURN type(r) AS rel, a.{Schema.PropName} AS from, b.{Schema.PropName} AS to, " +
+            $"r.{Schema.PropConfidence} AS confidence, r.{Schema.PropRationale} AS rationale, " +
+            $"coalesce(r.{Schema.PropReviewReason}, 'endpoint stale') AS reason");
+
+    /// <summary>意味エッジの再確認フラグを解除する（needsReview を消し confirmedAt を打つ）。</summary>
+    public QueryResult ConfirmSemanticEdge(string from, string to, string rel, string nowIso)
+    {
+        rel = rel.ToUpperInvariant();
+        Cypher.Ident(rel);
+        return _client.Query(
+            $"MATCH (a)-[r:{rel}]->(b) WHERE (a.{Schema.PropName} = $from OR a.{Schema.PropKey} = $from) " +
+            $"AND (b.{Schema.PropName} = $to OR b.{Schema.PropKey} = $to) AND r.{Schema.PropSource} = '{Schema.SourceSemantic}' " +
+            $"SET r.{Schema.PropNeedsReview} = null, r.{Schema.PropReviewReason} = null, r.{Schema.PropConfirmedAt} = $now " +
+            $"RETURN a.{Schema.PropName} AS from, type(r) AS rel, b.{Schema.PropName} AS to",
+            new Dictionary<string, object?> { ["from"] = from, ["to"] = to, ["now"] = nowIso });
+    }
+
+    /// <summary>低 confidence の意味エッジ（再確認候補）。</summary>
+    public QueryResult LowConfidenceEdges(double threshold) =>
+        _client.ReadOnlyQuery(
+            $"MATCH (a)-[r]->(b) WHERE r.{Schema.PropSource} = '{Schema.SourceSemantic}' AND r.{Schema.PropInvalidAt} IS NULL " +
+            $"AND coalesce(r.{Schema.PropAuthor}, '') <> 'community-detection' AND r.{Schema.PropConfidence} < {threshold.ToString(System.Globalization.CultureInfo.InvariantCulture)} " +
+            $"RETURN type(r) AS rel, a.{Schema.PropName} AS from, b.{Schema.PropName} AS to, r.{Schema.PropConfidence} AS confidence " +
+            $"ORDER BY confidence ASC LIMIT 100");
+
+    /// <summary>stale（消えたが温存された）ノード一覧。</summary>
+    public QueryResult StaleNodes() =>
+        _client.ReadOnlyQuery(
+            $"MATCH (n) WHERE coalesce(n.{Schema.PropStale}, false) = true " +
+            $"RETURN labels(n)[0] AS label, n.{Schema.PropName} AS name, n.{Schema.PropKey} AS key LIMIT 100");
+
+    /// <summary>名前が重複している Concept（統合候補）。</summary>
+    public QueryResult DuplicateConcepts() =>
+        _client.ReadOnlyQuery(
+            $"MATCH (c:{Schema.Concept}) WITH toLower(c.{Schema.PropName}) AS n, collect(c.{Schema.PropKey}) AS keys, count(*) AS cnt " +
+            $"WHERE cnt > 1 RETURN n AS name, cnt AS count, keys");
+
+    /// <summary>自動生成のままで未整理のコミュニティ Concept（人手で命名/集約する候補）。</summary>
+    public QueryResult UncuratedCommunities() =>
+        _client.ReadOnlyQuery(
+            $"MATCH (c:{Schema.Concept}) WHERE c.{Schema.PropKey} STARTS WITH 'community:' " +
+            $"RETURN c.{Schema.PropName} AS name, c.{Schema.PropMembers} AS members, c.{Schema.PropSummary} AS summary " +
+            $"ORDER BY members DESC LIMIT 50");
+
     /// <summary>生 Cypher を読み取り専用で実行する（書き込みは拒否される, P0）。</summary>
     public QueryResult Raw(string cypher) => _client.ReadOnlyQuery(cypher);
 
