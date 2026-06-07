@@ -283,3 +283,19 @@
 - **影響**: `AddressableExtractor`、`CSharpExtractor`(LOADS)、`IndexPipeline`(層追加)、Schema(ラベル/エッジ/プロパティ)、
   `GraphRepository.IndexedLabels`/`CandidateLabels`。フィクスチャに SampleGroup.asset / AddressableLoader.cs、
   ユニット+統合テスト追加（51 green）。
+
+### ADR-015 追補: Editor 自動 export ＋ マニフェスト自動検出（鮮度ガード付き）
+
+- **目的**: `ukg index` 時に Unity 真値マニフェストを「手動メニュー操作なし」で使う。
+- **方式 A（ukg は Unity に非アクセス・ファイル疎結合）**:
+  - **Editor 側**: `UkgAutoExport`(AssetPostprocessor) がアセット import を検知 → デバウンス(1.5s)して
+    `UkgExporter.Export()` をプロジェクト直下に自動書き出し。マニフェストは Assets 外なので再 import ループ無し。
+    MenuItem「Tools/UKG/Auto-export on import」でトグル（既定 ON）。
+  - **ukg 側**: `index`/`status`/`watch` が `--unity-manifest` 未指定でも `<proj>/ukg-unity-manifest.json` を
+    **自動検出**。`watch` は再 index ごとに解決し直す。
+  - **鮮度ガード**: 自動検出マニフェストが Assets の最新更新より**古ければ不採用**（古い真値より現在の
+    regex 近似を優先）。`index` は stale 時に stderr で警告。明示 `--unity-manifest` 指定はユーザー意図を尊重しそのまま使用。
+- **理由**: 起動中 Editor の MenuItem は外部から叩けず、batchmode は Editor 起動中はロックで不可。
+  「Editor が常に最新化 → ukg が拾う」に発想を逆転させると、開発中(Editor 開)に衝突なく真値が乗る。
+  ファイル不在は regex fallback（`assetSource` で可視化）、古い場合は鮮度ガードで誤用を防ぐ。
+- **影響**: `UkgAutoExport.cs`（UPM Editor）、CLI `ResolveManifest`/`IsManifestStale` ＋ index/status/watch の自動検出。

@@ -50,6 +50,44 @@ internal static class UkgCli
 
     private static IEmbedder MakeEmbedder() => Embedders.FromEnvironment();
 
+    /// <summary>既定マニフェストのファイル名（com.ukg.exporter の出力, ADR-008/015）。</summary>
+    private const string DefaultManifestName = "ukg-unity-manifest.json";
+
+    /// <summary>
+    /// 使用する Unity マニフェストを解決する（ADR-015）。
+    /// - 明示指定があればユーザー意図を尊重しそのまま使う。
+    /// - 無ければプロジェクト直下の既定マニフェストを自動検出。ただし **Assets の最新更新より古い
+    ///   （stale）なら使わない**（古い真値より現在の正規表現近似を優先）。
+    /// 戻り値の reason は出力用: "explicit" | "auto" | "none"（不在） | "stale"（古くて不採用）。
+    /// </summary>
+    private static (string? Path, string Reason) ResolveManifest(string projectPath, string? explicitPath)
+    {
+        if (!string.IsNullOrEmpty(explicitPath)) return (explicitPath, "explicit");
+        var def = Path.Combine(projectPath, DefaultManifestName);
+        if (!File.Exists(def)) return (null, "none");
+        if (IsManifestStale(projectPath, def)) return (null, "stale");
+        return (def, "auto");
+    }
+
+    /// <summary>マニフェストが Assets 配下の最新ファイルより古ければ stale。</summary>
+    private static bool IsManifestStale(string projectPath, string manifestPath)
+    {
+        try
+        {
+            var manifestTime = File.GetLastWriteTimeUtc(manifestPath);
+            var assets = Path.Combine(projectPath, "Assets");
+            var root = Directory.Exists(assets) ? assets : projectPath;
+            foreach (var f in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            {
+                // マニフェスト自身と非ソース系は無視（負荷軽減のため拡張子で軽く絞る）
+                if (string.Equals(f, manifestPath, StringComparison.OrdinalIgnoreCase)) continue;
+                if (File.GetLastWriteTimeUtc(f) > manifestTime) return true;
+            }
+            return false;
+        }
+        catch { return false; } // 走査不能なら stale 判定しない（保守的に採用）
+    }
+
     private static int Index(string[] args)
     {
         if (args.Length < 2) return Fail("usage: ukg index <unityProjectPath> [--no-communities] [--force] [--unity-manifest <path>]");
@@ -58,8 +96,11 @@ internal static class UkgCli
         bool communities = !args.Contains("--no-communities");
         bool force = args.Contains("--force");
         var opt = ParseFlags(args, 2);
-        var manifest = opt.GetValueOrDefault("unity-manifest");
-        if (manifest is not null && !File.Exists(manifest)) return Fail($"unity manifest not found: {manifest}");
+        var explicitManifest = opt.GetValueOrDefault("unity-manifest");
+        if (explicitManifest is not null && !File.Exists(explicitManifest)) return Fail($"unity manifest not found: {explicitManifest}");
+        var (manifest, manifestReason) = ResolveManifest(projectPath, explicitManifest); // 既定マニフェストを自動検出
+        if (manifestReason == "stale")
+            Console.Error.WriteLine("[ukg] 既定マニフェストが Assets より古いため不採用（regex fallbackで継続）。Unity Editor で再exportしてください。");
 
         using var client = GraphClient.Connect();
         Write(DoIndex(client, projectPath, manifest, communities, force));
@@ -103,7 +144,7 @@ internal static class UkgCli
         var projectPath = args[1];
         if (!Directory.Exists(projectPath)) return Fail($"path not found: {projectPath}");
         var opt = ParseFlags(args, 2);
-        var manifest = opt.GetValueOrDefault("unity-manifest");
+        var (manifest, _) = ResolveManifest(projectPath, opt.GetValueOrDefault("unity-manifest"));
 
         using var client = GraphClient.Connect();
         var repo = new GraphRepository(client);
@@ -149,12 +190,14 @@ internal static class UkgCli
         if (!Directory.Exists(projectPath)) return Fail($"path not found: {projectPath}");
         bool communities = !args.Contains("--no-communities");
         var opt = ParseFlags(args, 2);
-        var manifest = opt.GetValueOrDefault("unity-manifest");
+        var explicitManifest = opt.GetValueOrDefault("unity-manifest");
         int debounce = opt.TryGetValue("debounce", out var dv) && int.TryParse(dv, out var d) ? d : 800;
+        // 監視中は Editor がマニフェストを更新するので、再 index のたびに解決し直す（新鮮なら採用・古ければ regex）
+        string? Manifest() => ResolveManifest(projectPath, explicitManifest).Path;
 
         using var client = GraphClient.Connect();
         // 起動時に一度同期
-        Write(DoIndex(client, projectPath, manifest, communities, false));
+        Write(DoIndex(client, projectPath, Manifest(), communities, false));
 
         var gate = new object();
         var pending = false;
@@ -168,7 +211,7 @@ internal static class UkgCli
                 {
                     bool run; lock (gate) { run = pending; pending = false; }
                     if (!run) return;
-                    try { Write(DoIndex(client, projectPath, manifest, communities, false)); }
+                    try { Write(DoIndex(client, projectPath, Manifest(), communities, false)); }
                     catch (Exception ex) { Fail(ex.Message); }
                 }, null, debounce, System.Threading.Timeout.Infinite);
                 timer.Change(debounce, System.Threading.Timeout.Infinite);
