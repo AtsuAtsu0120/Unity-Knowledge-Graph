@@ -314,18 +314,59 @@ public sealed class GraphRepository
             new Dictionary<string, object?> { ["q"] = nameOrKey });
     }
 
+    // ---- 構造的根拠（curation 誤りの予防, ADR-014）----
+
+    /// <summary>
+    /// 2ノードが静的エッジ（ImpactRelations, 名前空間は除外）で <paramref name="maxHops"/> ホップ以内に
+    /// 繋がっているか。最短ホップ数を返す（繋がっていなければ null）。意味エッジの構造的裏付け判定に使う。
+    /// </summary>
+    public int? StructuralBasis(string from, string to, int maxHops)
+    {
+        var rels = string.Join("|", Schema.ImpactRelations);
+        maxHops = Math.Clamp(maxHops, 1, 6);
+        var r = _client.ReadOnlyQuery(
+            $"MATCH (a) WHERE a.{Schema.PropName} = $from OR a.{Schema.PropKey} = $from WITH a LIMIT 1 " +
+            $"MATCH (b) WHERE b.{Schema.PropName} = $to OR b.{Schema.PropKey} = $to WITH a, b LIMIT 1 " +
+            $"OPTIONAL MATCH p = (a)-[:{rels}*1..{maxHops}]-(b) " +
+            $"RETURN min(length(p)) AS hops",
+            new Dictionary<string, object?> { ["from"] = from, ["to"] = to });
+        if (r.Rows.Count == 0) return null;
+        return r.Rows[0][0] switch { long h => (int)h, int n => n, _ => null };
+    }
+
+    /// <summary>名前/キーが Concept ノードに解決されるか（構造的根拠の対象外＝概念は静的エッジを持たない）。</summary>
+    private bool ResolvesToConcept(string nameOrKey)
+    {
+        var r = _client.ReadOnlyQuery(
+            $"MATCH (n) WHERE n.{Schema.PropName} = $q OR n.{Schema.PropKey} = $q RETURN labels(n)[0] AS l LIMIT 1",
+            new Dictionary<string, object?> { ["q"] = nameOrKey });
+        return r.Rows.Count > 0 && r.Rows[0][0]?.ToString() == Schema.Concept;
+    }
+
     // ---- P3/P4: 意味エッジ・Concept ----
 
-    /// <summary>意味エッジを追加する（source=semantic, 時間性つき）。</summary>
+    /// <summary>
+    /// 意味エッジを追加する（source=semantic, 時間性つき）。
+    /// <paramref name="requireBasis"/>=true の時、両端が型ノードなら構造的根拠（<paramref name="basisHops"/>
+    /// ホップ以内の静的接続）を要求し、無ければ拒否する（誤った sem add の予防, ADR-014）。
+    /// 概念ノードが絡む辺は静的エッジを持たないため根拠チェックの対象外。
+    /// </summary>
     public QueryResult AddSemanticEdge(
         string from, string to, string rel, double? confidence, string? why, string author,
-        string nowIso, string? commitSha, bool supersede)
+        string nowIso, string? commitSha, bool supersede,
+        bool requireBasis = false, int basisHops = 3)
     {
         if (!Schema.IsSemanticRelation(rel))
             throw new ArgumentException(
                 $"'{rel}' は意味エッジではありません。許可: {string.Join(", ", Schema.SemanticRelations)}");
         rel = rel.ToUpperInvariant();
         Cypher.Ident(rel);
+
+        if (requireBasis && !ResolvesToConcept(from) && !ResolvesToConcept(to)
+            && StructuralBasis(from, to, basisHops) is null)
+            throw new ArgumentException(
+                $"構造的根拠なし: '{from}' と '{to}' は静的エッジで {basisHops} ホップ以内に繋がっていません。" +
+                $"誤った意味エッジの可能性が高いため拒否しました（--basis-hops で緩和可）。");
 
         var p = new Dictionary<string, object?> { ["from"] = from, ["to"] = to, ["now"] = nowIso };
 

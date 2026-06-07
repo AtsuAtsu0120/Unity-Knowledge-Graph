@@ -37,6 +37,7 @@ internal static class UkgCli
                 "community" => Community(args),
                 "reflect" => Reflect(args),
                 "gaps" => Gaps(args),
+                "basis" => Basis(args),
                 "-h" or "--help" or "help" => Usage(),
                 _ => Fail($"unknown command: {args[0]}")
             };
@@ -317,7 +318,9 @@ internal static class UkgCli
                 var why = opt.GetValueOrDefault("why");
                 var author = opt.GetValueOrDefault("author", "llm");
                 bool supersede = opt.ContainsKey("supersede");
-                WriteResult(repo.AddSemanticEdge(from, to, rel, confidence, why, author, NowIso(), GitHead(), supersede));
+                bool requireBasis = opt.ContainsKey("require-basis");
+                int basisHops = opt.TryGetValue("basis-hops", out var bh) && int.TryParse(bh, out var bhv) ? bhv : 3;
+                WriteResult(repo.AddSemanticEdge(from, to, rel, confidence, why, author, NowIso(), GitHead(), supersede, requireBasis, basisHops));
                 return 0;
             case "review":
                 WriteResult(repo.ReviewQueue());
@@ -364,6 +367,29 @@ internal static class UkgCli
             uncuratedCommunities = Rows(communities),
             guidance = "needsReview/staleは sem confirm か sem add --supersede で更新。lowConfidenceは再検証。" +
                        "duplicateConceptsは統合。uncuratedCommunitiesは concept add で意味のある概念に整理。"
+        });
+        return 0;
+    }
+
+    private static int Basis(string[] args)
+    {
+        if (args.Length < 3) return Fail("usage: ukg basis <from> <to> [--hops 3]");
+        var opt = ParseFlags(args, 3);
+        int hops = opt.TryGetValue("hops", out var hs) && int.TryParse(hs, out var hv) ? hv : 3;
+        using var client = GraphClient.Connect();
+        var repo = new GraphRepository(client);
+        var d = repo.StructuralBasis(args[1], args[2], hops);
+        Write(new
+        {
+            ok = true,
+            from = args[1],
+            to = args[2],
+            maxHops = hops,
+            hops = d,
+            hasBasis = d is not null,
+            note = d is not null
+                ? $"{d} ホップで構造的に接続（意味エッジの根拠あり）"
+                : $"{hops} ホップ以内に静的接続なし（意味エッジの構造的根拠が弱い）"
         });
         return 0;
     }
@@ -502,6 +528,8 @@ internal static class UkgCli
           deps <assetPathOrGuid>        Assetの依存（DEPENDS_ON / SCRIPT_OF）
           impact <name> [--depth 4]     変更時の影響範囲（推移的な上流依存）
           sem add --from <a> --to <b> --rel <REL> [--confidence 0.8] [--why "..."] [--supersede]
+                  [--require-basis] [--basis-hops 3]  構造的根拠が無い辺を拒否（curation誤り予防）
+          basis <from> <to> [--hops 3]  2ノードの構造的接続（意味エッジの根拠）を確認
           sem ls [--all]                意味エッジ一覧（--allで無効化済みも）
           sem review                    構造変更で要再確認になった意味エッジ
           sem confirm --from <a> --to <b> --rel <REL>   再確認フラグを解除

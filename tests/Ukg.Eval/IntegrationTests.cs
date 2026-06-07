@@ -134,6 +134,44 @@ public sealed class IntegrationTests
     }
 
     [Fact]
+    public void StructuralBasis_RespectsHopLimit()
+    {
+        using var client = Connect();
+        if (client is null) return;
+        var repo = new GraphRepository(client);
+        Index(repo, new HashingEmbedder());
+
+        // PlayerController -INHERITS-> Character = 1 ホップ
+        Assert.Equal(1, repo.StructuralBasis("PlayerController", "Character", 3));
+        // Character と Weapon は直接辺なし（PlayerController 経由で 2 ホップ）
+        Assert.Null(repo.StructuralBasis("Character", "Weapon", 1));   // 1 ホップでは届かない
+        Assert.Equal(2, repo.StructuralBasis("Character", "Weapon", 3)); // 2 ホップで接続
+    }
+
+    [Fact]
+    public void AddSemanticEdge_RequireBasis_RejectsUnfoundedButAllowsGrounded()
+    {
+        using var client = Connect();
+        if (client is null) return;
+        var repo = new GraphRepository(client);
+        Index(repo, new HashingEmbedder());
+
+        // 根拠あり（1ホップ）→ 通る
+        repo.AddSemanticEdge("PlayerController", "Character", "RELATES_TO", 0.8, "inherits", "test",
+            Now, null, supersede: false, requireBasis: true, basisHops: 3);
+
+        // 根拠なし（1ホップ以内に接続なし）→ 拒否
+        Assert.Throws<ArgumentException>(() =>
+            repo.AddSemanticEdge("Character", "Weapon", "RELATES_TO", 0.8, "guess", "test",
+                Now, null, supersede: false, requireBasis: true, basisHops: 1));
+
+        // 概念が絡む辺は根拠チェック対象外 → 通る
+        repo.AddConcept("AutoTestConcept", "x", "test", Now);
+        repo.AddSemanticEdge("AutoTestConcept", "Weapon", "RESPONSIBLE_FOR", 0.7, "concept edge", "test",
+            Now, null, supersede: false, requireBasis: true, basisHops: 1);
+    }
+
+    [Fact]
     public void Impact_IncludesCallAndComponentDependents()
     {
         using var client = Connect();

@@ -239,3 +239,27 @@
   uncoveredHubs を degree でなく churn/中心性で重み付け → 次段（現状は degree＋型限定＋vendored除外で実用）。
 - **影響**: `Schema.QueryLog`/`PropQuery`/`PropCount`/`PropLastSeen`、`GraphRepository.LogMiss`/`MissedQueries`/
   `UncoveredHubs`、CLI `candidates`(none/low で記録)＋`gaps`。統合テスト `LogMiss_*`/`UncoveredHubs_*` を追加。
+
+## ADR-014: curation 誤りを「仕組み」で防ぐ — 多層ゲート（構造根拠/敵対検証/eval/可逆）＋ ukg-curate
+
+- **文脈**: 意味層を自動増築（無人スケジュール）するには、LLM のコード読み違いによる誤った sem add を
+  「人の目視」でなく**仕組み**で防ぐ必要がある。curation をコード変更と同等に扱い、ゲートを通す。
+- **判断（多層防御, defense in depth）**:
+  1. **① 構造的根拠（決定的・無料）**: 型↔型の意味エッジは静的エッジで K ホップ以内に接続が無ければ拒否。
+     `GraphRepository.StructuralBasis` ＋ `AddSemanticEdge(requireBasis, basisHops)` ＋ CLI `sem add --require-basis` /
+     `ukg basis`。概念ノードが絡む辺は静的エッジを持たないため対象外（②③で担保）。最悪の幻覚を無料で殺す。
+  2. **② 敵対的検証（主レバー）**: 提案を別の独立サブエージェントに「反証」させ、過半数が反証できなければ採用。
+     構造的に近いが責務解釈が誤るケースを catch。`ukg-curate` スキルが orchestrate（Workflow で並列可）。
+  3. **③ eval 回帰ゲート**: バッチ反映後に `EvalHarness` を回し、false-high 出現/recall 低下ならロールバック。
+     意味層版の CI（既存ハーネス再利用）。
+  4. **④ 来歴＋可逆**: 自動追加は `author=auto-curate` タグ＋バイテンポラル（invalidAt）でバッチ単位リバート可。
+  - 不確実な提案は低 confidence で staging → 次回 `reflect` が拾い直す（自己修正）。
+- **actuator**: `.claude/skills/ukg-curate/` が「gaps/reflect 取得 → 提案(根拠付き) → ①②③④ → レポート」を実行。
+  bootstrap(初期化)と対の継続増築。手動運用で品質確認 → `/schedule` で無人化（A）。
+- **理由**: 「目視で弾く」は自動化の障害。誤りが構造・検証・eval の3ゲートを通れないようにすれば、無人 cron でも安全。
+  グラフはローカル・非公開で blast radius が小さく、④で完全に巻き戻せる。
+- **代替案**: 全 sem add で根拠必須 → 人間の手動 add を縛りすぎるので既定 off、curate と明示時のみ on。
+  ⑤ 使用フィードバック（誤答を招いた辺の降格）は次段（配線が重い）。
+- **影響**: `GraphRepository.StructuralBasis`/`ResolvesToConcept`/`AddSemanticEdge(requireBasis,basisHops)`、
+  CLI `sem add --require-basis --basis-hops` / `basis`、`.claude/skills/ukg-curate/`。
+  統合テスト `StructuralBasis_*`/`AddSemanticEdge_RequireBasis_*` を追加。

@@ -26,7 +26,7 @@ Skillの漸進的開示で軽量に保つ。コアは `Ukg.Core` に分離して
 src/
   Ukg.Core/         グラフモデル・FalkorDBクライアント・リポジトリ・埋め込み・コミュニティ
   Ukg.Extractors/   CSharpExtractor(Roslyn) / AssetExtractor(.meta,YAML) / UnityManifest / IndexPipeline
-  Ukg.Cli/          ukg コマンド（index/status/watch/search/candidates/query/find/neighbors/deps/impact/sem/concept/community/reflect/gaps）
+  Ukg.Cli/          ukg コマンド（index/status/watch/search/candidates/query/find/neighbors/deps/impact/sem/concept/community/reflect/gaps/basis）
 unity/
   com.ukg.exporter/ Unity Editor 用エクスポータ(UPM)。AssetDatabase真値の依存をJSON出力（任意）
 skills/
