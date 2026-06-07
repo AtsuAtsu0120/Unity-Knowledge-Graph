@@ -36,6 +36,7 @@ internal static class UkgCli
                 "concept" => Concept(args),
                 "community" => Community(args),
                 "reflect" => Reflect(args),
+                "gaps" => Gaps(args),
                 "-h" or "--help" or "help" => Usage(),
                 _ => Fail($"unknown command: {args[0]}")
             };
@@ -234,6 +235,8 @@ internal static class UkgCli
         // grep に落ちる前に「英語のコード用語で引き直す」よう促す（ADR-011 #言語ブリッジ）。
         bool nonAscii = args[1].Any(c => c > 0x7F);
         bool retryEnglish = !hit && nonAscii;
+        // 増築の需要シグナル: 答えられなかった(none/low)クエリを記録する（ADR-013）。
+        if (!hit) repo.LogMiss(args[1], confidence, NowIso());
         string recommendation = confidence switch
         {
             "high" => "グラフに十分な候補があります。grep は不要です。",
@@ -365,6 +368,39 @@ internal static class UkgCli
         return 0;
     }
 
+    private static int Gaps(string[] args)
+    {
+        var opt = ParseFlags(args, 1);
+        int limit = opt.TryGetValue("limit", out var ls) && int.TryParse(ls, out var lv) ? lv : 15;
+        var exclude = opt.GetValueOrDefault("exclude"); // vendored 除外（key 部分一致, 例: --exclude SQLite）
+        using var client = GraphClient.Connect();
+        var repo = new GraphRepository(client);
+
+        object Rows(QueryResult r) => new { columns = r.Columns, rows = r.Rows };
+        var missed = repo.MissedQueries(limit);
+        var hubs = repo.UncoveredHubs(limit, exclude);
+        var comms = repo.UncuratedCommunities();
+
+        Write(new
+        {
+            ok = true,
+            graph = client.GraphName,
+            summary = new
+            {
+                missedQueries = missed.Rows.Count,
+                uncoveredHubs = hubs.Rows.Count,
+                uncuratedCommunities = comms.Rows.Count
+            },
+            missedQueries = Rows(missed),
+            uncoveredHubs = Rows(hubs),
+            uncuratedCommunities = Rows(comms),
+            guidance = "意味層を増築すべき場所。missedQueries=実需で答えられなかった問い→該当エリアを concept/sem add。" +
+                       "uncoveredHubs=中心的だが意味づけ0の型→責務を sem add。uncuratedCommunities=自動クラスタ→concept add。" +
+                       "すべて英語・非自明優先。reflect(保守)と対で運用する。"
+        });
+        return 0;
+    }
+
     private static int Concept(string[] args)
     {
         if (args.Length < 2) return Fail("usage: ukg concept add --name <name> [--summary ...]");
@@ -471,7 +507,10 @@ internal static class UkgCli
           sem confirm --from <a> --to <b> --rel <REL>   再確認フラグを解除
           concept add --name <name> [--summary "..."]   概念ノードを追加
           community                     コミュニティを再計算
-          reflect [--min-confidence 0.5]  要レビュー/低confidence/孤児/重複概念/未整理を集約
+          reflect [--min-confidence 0.5]  要レビュー/低confidence/孤児/重複概念/未整理を集約（保守）
+          gaps [--limit 15] [--exclude SQLite]
+                                        意味層の増築候補（答えられなかったクエリ/意味づけ0の中心型/未整理クラスタ）
+                                        --excludeでvendored(key部分一致)を除外
 
         Env:
           UKG_REDIS (default localhost:6379), UKG_GRAPH (default unity)

@@ -473,6 +473,59 @@ public sealed class GraphRepository
             $"RETURN c.{Schema.PropName} AS name, c.{Schema.PropMembers} AS members, c.{Schema.PropSummary} AS summary " +
             $"ORDER BY members DESC LIMIT 50");
 
+    // ---- 増築（curation の成長）: クエリミス・ログ ＋ カバレッジギャップ ----
+
+    /// <summary>
+    /// candidates が none/low だったクエリを記録する（需要シグナル）。同一クエリは count を加算。
+    /// 「実際に聞かれたのに答えられなかった問い」＝意味づけを増やすべき場所の地図になる。
+    /// </summary>
+    public void LogMiss(string query, string confidence, string nowIso)
+    {
+        var key = (query ?? "").Trim().ToLowerInvariant();
+        if (key.Length == 0) return;
+        _client.Query(
+            $"MERGE (q:{Schema.QueryLog} {{{Schema.PropKey}: $key}}) " +
+            $"SET q.{Schema.PropQuery} = $query, " +
+            $"q.{Schema.PropCount} = coalesce(q.{Schema.PropCount}, 0) + 1, " +
+            $"q.{Schema.PropConfidence} = $conf, " +
+            $"q.{Schema.PropLastSeen} = $now, " +
+            $"q.{Schema.PropCreatedAt} = coalesce(q.{Schema.PropCreatedAt}, $now)",
+            new Dictionary<string, object?> { ["key"] = key, ["query"] = query, ["conf"] = confidence, ["now"] = nowIso });
+    }
+
+    /// <summary>答えられなかったクエリを頻度順に返す（増築の優先度＝需要）。</summary>
+    public QueryResult MissedQueries(int limit) =>
+        _client.ReadOnlyQuery(
+            $"MATCH (q:{Schema.QueryLog}) " +
+            $"RETURN q.{Schema.PropQuery} AS query, q.{Schema.PropCount} AS count, " +
+            $"q.{Schema.PropConfidence} AS lastConfidence, q.{Schema.PropLastSeen} AS lastSeen " +
+            $"ORDER BY count DESC LIMIT {Math.Clamp(limit, 1, 200)}");
+
+    /// <summary>
+    /// 中心的（構造的に高次数）なのに意味エッジが1本も無い「型」＝「重要だが薄い」増築候補。
+    /// curation の単位は型/サブシステムなのでメソッドは除外。<paramref name="excludeKeySubstr"/> で
+    /// vendored ライブラリ（例: "SQLite"）を key 部分一致で除外できる。
+    /// </summary>
+    public QueryResult UncoveredHubs(int limit, string? excludeKeySubstr = null)
+    {
+        var labels = string.Join(" OR ", new[] { Schema.Class, Schema.Interface, Schema.Struct, Schema.Enum }
+            .Select(l => $"labels(n)[0] = '{l}'"));
+        var exclude = string.IsNullOrEmpty(excludeKeySubstr)
+            ? ""
+            : $"AND NOT n.{Schema.PropKey} CONTAINS $ex ";
+        // 「意味づけ済み」はLLM/人が張った意味エッジで判定する（community-detection の自動エッジは除外）。
+        return _client.ReadOnlyQuery(
+            $"MATCH (n) WHERE ({labels}) AND coalesce(n.{Schema.PropStale}, false) = false {exclude}" +
+            $"MATCH (n)-[r {{{Schema.PropSource}: '{Schema.SourceStatic}'}}]-() " +
+            $"WITH n, count(r) AS deg " +
+            $"OPTIONAL MATCH (n)-[rs {{{Schema.PropSource}: '{Schema.SourceSemantic}'}}]-() " +
+            $"WHERE coalesce(rs.{Schema.PropAuthor}, '') <> 'community-detection' " +
+            $"WITH n, deg, count(rs) AS sem WHERE sem = 0 " +
+            $"RETURN labels(n)[0] AS label, n.{Schema.PropName} AS name, n.{Schema.PropKey} AS key, deg " +
+            $"ORDER BY deg DESC LIMIT {Math.Clamp(limit, 1, 200)}",
+            excludeKeySubstr is null ? null : new Dictionary<string, object?> { ["ex"] = excludeKeySubstr });
+    }
+
     /// <summary>生 Cypher を読み取り専用で実行する（書き込みは拒否される, P0）。</summary>
     public QueryResult Raw(string cypher) => _client.ReadOnlyQuery(cypher);
 

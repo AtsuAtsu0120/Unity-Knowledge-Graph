@@ -16,6 +16,7 @@ public static class Schema
     public const string Concept = "Concept";
     public const string Method = "Method";     // P2: メソッド単位ノード
     public const string Meta = "UkgMeta";      // 索引状態などの内部メタ（グラフに1つ）
+    public const string QueryLog = "UkgQueryLog"; // 答えられなかったクエリの記録（増築の需要シグナル）
 
     // 静的エッジ（source=static）
     public const string Inherits = "INHERITS";        // Class -> Class
@@ -73,6 +74,11 @@ public static class Schema
     public const string PropNeedsReview = "needsReview"; // 構造変更で要再確認の意味エッジ
     public const string PropReviewReason = "reviewReason";
     public const string PropConfirmedAt = "confirmedAt"; // 再確認した時刻
+
+    // 増築（curation 成長）: クエリミス・ログ
+    public const string PropQuery = "query";           // 記録されたクエリ文字列
+    public const string PropCount = "count";           // 同一クエリのミス回数（需要の強さ）
+    public const string PropLastSeen = "lastSeen";     // 最終ミス時刻
 
     // source 値
     public const string SourceStatic = "static";

@@ -217,3 +217,25 @@
     「英語で引き直せ」を出し、grep 誤着地の前に自己修正させる（CLI 数行）。
   - 任意の上積み: マルチリンガル埋め込み（`UKG_EMBEDDER=http`）で search を日英横断に（API課金）。
 - **影響**: `Program.cs` の Candidates に `retryEnglish` 追加。`ukg-bootstrap/SKILL.md` に運用ルール追記。
+
+## ADR-013: 意味層の「増築」を仕組み化 — クエリミス・ログ ＋ カバレッジギャップ検出
+
+- **文脈**: `reflect` は意味層の**保守**（needsReview/低confidence/stale/重複の検知）であって、
+  **厚み（カバレッジ）は増えない**。意味層を成長させる仕組みが別途必要。成長の駆動は2つ：
+  (1) 需要駆動＝実際に聞かれて答えられなかった所、(2) 先回り＝重要なのに意味づけが薄い所。
+- **判断**:
+  1. **クエリミス・ログ（需要駆動）**: `candidates` が none/low の時、クエリを `UkgQueryLog` ノードに
+     記録し count を加算（同一クエリの頻度＝需要の強さ）。`GraphRepository.LogMiss` / CLI `candidates` が呼ぶ。
+  2. **`ukg gaps`（増築 TODO）**: 3バケツを統合して出す。
+     - `missedQueries`: 答えられなかったクエリを頻度順（実需の地図）
+     - `uncoveredHubs`: 構造的に高次数なのに意味エッジ0の**型**（community-detection 自動エッジは除外）。
+       curation 単位は型なのでメソッドは除外。`--exclude <substr>` で vendored（例: SQLite）を key 部分一致除外。
+     - `uncuratedCommunities`: 自動クラスタで未概念化のもの（既存）
+  3. 運用: **`reflect`（保守）と `gaps`（増築）を対で**回す。定期キュレーション・エージェントは両方を
+     ドレインする（needsReview 解消＋ gaps の埋め戻し）。増築の効果は eval の lift で測る。
+- **理由**: 「使うほど育つ」を放置でも育つに近づけるには、成長の検知を機械化する必要がある。
+  reflect だけでは痩せたまま（保守のみ）。需要(missedQueries)＋先回り(uncoveredHubs)で増築先を自動特定する。
+- **代替案**: ミスをファイルに記録 → グラフ内 `UkgQueryLog` にして per-graph・クエリ可能にした。
+  uncoveredHubs を degree でなく churn/中心性で重み付け → 次段（現状は degree＋型限定＋vendored除外で実用）。
+- **影響**: `Schema.QueryLog`/`PropQuery`/`PropCount`/`PropLastSeen`、`GraphRepository.LogMiss`/`MissedQueries`/
+  `UncoveredHubs`、CLI `candidates`(none/low で記録)＋`gaps`。統合テスト `LogMiss_*`/`UncoveredHubs_*` を追加。

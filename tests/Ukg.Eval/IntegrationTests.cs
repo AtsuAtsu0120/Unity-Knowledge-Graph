@@ -97,6 +97,43 @@ public sealed class IntegrationTests
     }
 
     [Fact]
+    public void LogMiss_AccumulatesCountAndSurfacesInMissedQueries()
+    {
+        using var client = Connect();
+        if (client is null) return;
+        var repo = new GraphRepository(client);
+        Index(repo, new HashingEmbedder());
+
+        // 同一クエリ2回 + 別クエリ1回 → count で需要が分かる
+        repo.LogMiss("save system", "none", Now);
+        repo.LogMiss("save system", "none", Now);
+        repo.LogMiss("multiplayer netcode", "low", Now);
+
+        var missed = repo.MissedQueries(10);
+        Assert.Equal("save system", missed.Rows[0][0]?.ToString()); // 最頻が先頭
+        Assert.Equal(2L, Convert.ToInt64(missed.Rows[0][1]));
+        Assert.Contains(missed.Rows, r => r[0]?.ToString() == "multiplayer netcode");
+    }
+
+    [Fact]
+    public void UncoveredHubs_RanksCentralNodesWithoutSemanticEdges()
+    {
+        using var client = Connect();
+        if (client is null) return;
+        var repo = new GraphRepository(client);
+        Index(repo, new HashingEmbedder());
+
+        // 種付け前: 中心的な PlayerController は意味エッジ0 → 増築候補に出る
+        var before = repo.UncoveredHubs(20);
+        Assert.Contains(before.Rows, r => r[2]?.ToString() == "Game.PlayerController");
+
+        // 意味エッジを張ると候補から外れる
+        repo.AddSemanticEdge("PlayerController", "Inventory", "COLLABORATES_WITH", 0.8, "uses", "test", Now, null, false);
+        var after = repo.UncoveredHubs(20);
+        Assert.DoesNotContain(after.Rows, r => r[2]?.ToString() == "Game.PlayerController");
+    }
+
+    [Fact]
     public void Impact_IncludesCallAndComponentDependents()
     {
         using var client = Connect();
