@@ -36,7 +36,7 @@ cd <projectDir> && source .ukg.env    # UKG_GRAPH を設定
 
 ### Step 0 — TODO を取得
 ```bash
-ukg gaps --limit 8 --exclude SQLite --exclude Generated   # 増築候補
+ukg gaps --limit 8 --exclude SQLite,Generated,Formatters   # 増築候補（除外はカンマ区切り）
 ukg reflect                                                # 保守候補
 ```
 増築は `missedQueries`（実需）＞ `uncoveredHubs`（中心だが薄い）＞ `uncuratedCommunities` の順で優先。

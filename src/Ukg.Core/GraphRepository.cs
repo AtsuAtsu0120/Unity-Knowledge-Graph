@@ -508,11 +508,19 @@ public sealed class GraphRepository
             $"WHERE cnt > 1 RETURN n AS name, cnt AS count, keys");
 
     /// <summary>自動生成のままで未整理のコミュニティ Concept（人手で命名/集約する候補）。</summary>
-    public QueryResult UncuratedCommunities() =>
-        _client.ReadOnlyQuery(
-            $"MATCH (c:{Schema.Concept}) WHERE c.{Schema.PropKey} STARTS WITH 'community:' " +
+    public QueryResult UncuratedCommunities(IReadOnlyList<string>? excludes = null)
+    {
+        bool hasEx = excludes is { Count: > 0 };
+        // コミュニティ名はメンバー名を含む（例: "SQLite系"）。name/summary に除外語を含むクラスタを外す。
+        var exclude = hasEx
+            ? $"AND none(s IN $exs WHERE c.{Schema.PropName} CONTAINS s OR coalesce(c.{Schema.PropSummary}, '') CONTAINS s) "
+            : "";
+        return _client.ReadOnlyQuery(
+            $"MATCH (c:{Schema.Concept}) WHERE c.{Schema.PropKey} STARTS WITH 'community:' {exclude}" +
             $"RETURN c.{Schema.PropName} AS name, c.{Schema.PropMembers} AS members, c.{Schema.PropSummary} AS summary " +
-            $"ORDER BY members DESC LIMIT 50");
+            $"ORDER BY members DESC LIMIT 50",
+            hasEx ? new Dictionary<string, object?> { ["exs"] = excludes!.Cast<object?>().ToList() } : null);
+    }
 
     // ---- 増築（curation の成長）: クエリミス・ログ ＋ カバレッジギャップ ----
 
@@ -544,16 +552,15 @@ public sealed class GraphRepository
 
     /// <summary>
     /// 中心的（構造的に高次数）なのに意味エッジが1本も無い「型」＝「重要だが薄い」増築候補。
-    /// curation の単位は型/サブシステムなのでメソッドは除外。<paramref name="excludeKeySubstr"/> で
-    /// vendored ライブラリ（例: "SQLite"）を key 部分一致で除外できる。
+    /// curation の単位は型/サブシステムなのでメソッドは除外。<paramref name="excludes"/> の各文字列を
+    /// key に部分一致で含む型を除外する（vendored / 生成コード対策, 例: ["SQLite","Generated"]）。
     /// </summary>
-    public QueryResult UncoveredHubs(int limit, string? excludeKeySubstr = null)
+    public QueryResult UncoveredHubs(int limit, IReadOnlyList<string>? excludes = null)
     {
         var labels = string.Join(" OR ", new[] { Schema.Class, Schema.Interface, Schema.Struct, Schema.Enum }
             .Select(l => $"labels(n)[0] = '{l}'"));
-        var exclude = string.IsNullOrEmpty(excludeKeySubstr)
-            ? ""
-            : $"AND NOT n.{Schema.PropKey} CONTAINS $ex ";
+        bool hasEx = excludes is { Count: > 0 };
+        var exclude = hasEx ? $"AND none(s IN $exs WHERE n.{Schema.PropKey} CONTAINS s) " : "";
         // 「意味づけ済み」はLLM/人が張った意味エッジで判定する（community-detection の自動エッジは除外）。
         return _client.ReadOnlyQuery(
             $"MATCH (n) WHERE ({labels}) AND coalesce(n.{Schema.PropStale}, false) = false {exclude}" +
@@ -564,7 +571,7 @@ public sealed class GraphRepository
             $"WITH n, deg, count(rs) AS sem WHERE sem = 0 " +
             $"RETURN labels(n)[0] AS label, n.{Schema.PropName} AS name, n.{Schema.PropKey} AS key, deg " +
             $"ORDER BY deg DESC LIMIT {Math.Clamp(limit, 1, 200)}",
-            excludeKeySubstr is null ? null : new Dictionary<string, object?> { ["ex"] = excludeKeySubstr });
+            hasEx ? new Dictionary<string, object?> { ["exs"] = excludes!.Cast<object?>().ToList() } : null);
     }
 
     /// <summary>生 Cypher を読み取り専用で実行する（書き込みは拒否される, P0）。</summary>

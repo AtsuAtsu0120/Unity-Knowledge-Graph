@@ -127,6 +127,11 @@ public sealed class IntegrationTests
         var before = repo.UncoveredHubs(20);
         Assert.Contains(before.Rows, r => r[2]?.ToString() == "Game.PlayerController");
 
+        // --exclude（key 部分一致, 複数可）で除外できる
+        var excluded = repo.UncoveredHubs(20, new[] { "Player" });
+        Assert.DoesNotContain(excluded.Rows, r => r[2]?.ToString() == "Game.PlayerController");
+        Assert.Contains(before.Rows, r => r[2]?.ToString() == "Game.Weapon"); // 他は残る（sanity）
+
         // 意味エッジを張ると候補から外れる
         repo.AddSemanticEdge("PlayerController", "Inventory", "COLLABORATES_WITH", 0.8, "uses", "test", Now, null, false);
         var after = repo.UncoveredHubs(20);

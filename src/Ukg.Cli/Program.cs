@@ -398,14 +398,16 @@ internal static class UkgCli
     {
         var opt = ParseFlags(args, 1);
         int limit = opt.TryGetValue("limit", out var ls) && int.TryParse(ls, out var lv) ? lv : 15;
-        var exclude = opt.GetValueOrDefault("exclude"); // vendored 除外（key 部分一致, 例: --exclude SQLite）
+        // vendored/生成コード除外（カンマ区切りで複数可, 例: --exclude SQLite,Generated）
+        var excludes = (opt.GetValueOrDefault("exclude") ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
         using var client = GraphClient.Connect();
         var repo = new GraphRepository(client);
 
         object Rows(QueryResult r) => new { columns = r.Columns, rows = r.Rows };
         var missed = repo.MissedQueries(limit);
-        var hubs = repo.UncoveredHubs(limit, exclude);
-        var comms = repo.UncuratedCommunities();
+        var hubs = repo.UncoveredHubs(limit, excludes);
+        var comms = repo.UncuratedCommunities(excludes);
 
         Write(new
         {
@@ -536,9 +538,9 @@ internal static class UkgCli
           concept add --name <name> [--summary "..."]   概念ノードを追加
           community                     コミュニティを再計算
           reflect [--min-confidence 0.5]  要レビュー/低confidence/孤児/重複概念/未整理を集約（保守）
-          gaps [--limit 15] [--exclude SQLite]
+          gaps [--limit 15] [--exclude SQLite,Generated]
                                         意味層の増築候補（答えられなかったクエリ/意味づけ0の中心型/未整理クラスタ）
-                                        --excludeでvendored(key部分一致)を除外
+                                        --excludeでvendored/生成を除外（カンマ区切り複数可, hubs/communities両方に適用）
 
         Env:
           UKG_REDIS (default localhost:6379), UKG_GRAPH (default unity)
