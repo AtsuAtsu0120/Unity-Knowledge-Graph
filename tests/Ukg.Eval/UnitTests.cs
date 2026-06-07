@@ -10,6 +10,46 @@ public sealed class UnitTests
     private static IndexState State(params (string Path, string Hash)[] files) =>
         new() { Files = files.ToDictionary(f => f.Path, f => f.Hash) };
 
+    // ---- Addressables 抽出（ADR-015, DB不要）----
+
+    [Fact]
+    public void AddressableExtractor_ParsesGroupAndEntry()
+    {
+        var r = new AddressableExtractor().Extract(Fixture.SampleProject());
+
+        // フィクスチャの SampleGroup / player-prefab エントリが取れる
+        Assert.Contains(r.Nodes, n => n.Label == Schema.AddressableGroup && n.Key == "addrgroup:SampleGroup");
+        Assert.Contains(r.Nodes, n => n.Label == Schema.AddressableEntry && n.Key == "addr:player-prefab");
+        // アドレス → 実アセット(guid) の ADDRESSES 辺
+        Assert.Contains(r.Edges, e => e.Type == Schema.Addresses
+            && e.FromKey == "addr:player-prefab" && e.ToKey == "55555555555555555555555555555555");
+        Assert.Contains(r.Edges, e => e.Type == Schema.HasEntry && e.FromKey == "addrgroup:SampleGroup");
+    }
+
+    [Fact]
+    public void AddressableExtractor_EmptyWhenNoAddressables()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), "ukg_noaddr_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(tmp, "Assets"));
+        try
+        {
+            // Addressables グループの無いプロジェクト → 空（壊れない）
+            var r = new AddressableExtractor().Extract(tmp);
+            Assert.Empty(r.Nodes);
+            Assert.Empty(r.Edges);
+        }
+        finally { Directory.Delete(tmp, recursive: true); }
+    }
+
+    [Fact]
+    public void CSharpExtractor_DetectsAddressablesLoadLiteral()
+    {
+        var cs = Fixture.ExtractCs();
+        // AddressableLoader.Load() の Addressables.LoadAssetAsync<object>("player-prefab") → LOADS 辺
+        Assert.Contains(cs.Result.Edges, e => e.Type == Schema.Loads
+            && e.FromKey == "Game.AddressableLoader" && e.ToKey == "addr:player-prefab");
+    }
+
     [Fact]
     public void IndexState_Diff_DetectsAddedChangedRemoved()
     {

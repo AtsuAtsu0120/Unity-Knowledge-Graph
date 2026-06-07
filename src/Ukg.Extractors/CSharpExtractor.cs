@@ -212,6 +212,22 @@ public sealed class CSharpExtractor
             if (name is GenericNameSyntax gen && ComponentAccessors.Contains(gen.Identifier.Text)
                 && gen.TypeArgumentList.Arguments.Count == 1)
                 LinkType(gen.TypeArgumentList.Arguments[0]);
+
+            // Addressables.Load*/Instantiate*("literal address") → LOADS 辺（型 → AddressableEntry）
+            if (inv.Expression is MemberAccessExpressionSyntax am
+                && am.Expression is IdentifierNameSyntax { Identifier.Text: "Addressables" }
+                && (am.Name.Identifier.Text.StartsWith("Load", StringComparison.Ordinal)
+                    || am.Name.Identifier.Text.StartsWith("Instantiate", StringComparison.Ordinal)))
+            {
+                var first = inv.ArgumentList.Arguments.Count > 0 ? inv.ArgumentList.Arguments[0].Expression : null;
+                if (first is LiteralExpressionSyntax lit && lit.IsKind(SyntaxKind.StringLiteralExpression))
+                {
+                    var addr = lit.Token.ValueText;
+                    if (addr.Length > 0 && already.Add("load:" + addr))
+                        result.AddEdge(new GraphEdge(Schema.Loads, typeLabel, typeKey,
+                            Schema.AddressableEntry, "addr:" + addr));
+                }
+            }
         }
 
         // [RequireComponent(typeof(T))]

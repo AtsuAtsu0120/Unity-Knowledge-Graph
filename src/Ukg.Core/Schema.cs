@@ -15,6 +15,8 @@ public static class Schema
     public const string Asset = "Asset";
     public const string Concept = "Concept";
     public const string Method = "Method";     // P2: メソッド単位ノード
+    public const string AddressableGroup = "AddressableGroup"; // Addressables グループ
+    public const string AddressableEntry = "AddressableEntry"; // Addressables エントリ（address 単位）
     public const string Meta = "UkgMeta";      // 索引状態などの内部メタ（グラフに1つ）
     public const string QueryLog = "UkgQueryLog"; // 答えられなかったクエリの記録（増築の需要シグナル）
 
@@ -28,6 +30,9 @@ public static class Schema
     public const string DeclaredIn = "DECLARED_IN";    // P2: Method -> 宣言型
     public const string Calls = "CALLS";               // P2: Method -> Method
     public const string UsesComponent = "USES_COMPONENT"; // P2: Type -> Type（GetComponent<T>等のUnity結合）
+    public const string HasEntry = "HAS_ENTRY";        // AddressableGroup -> AddressableEntry
+    public const string Addresses = "ADDRESSES";       // AddressableEntry -> Asset（アドレス→アセット）
+    public const string Loads = "LOADS";               // Type -> AddressableEntry（Addressables.Load("addr")）
 
     // 意味エッジ（source=semantic）
     public const string RelatesTo = "RELATES_TO";
@@ -74,6 +79,10 @@ public static class Schema
     public const string PropNeedsReview = "needsReview"; // 構造変更で要再確認の意味エッジ
     public const string PropReviewReason = "reviewReason";
     public const string PropConfirmedAt = "confirmedAt"; // 再確認した時刻
+
+    // Addressables
+    public const string PropAddress = "address";       // Addressables アドレス文字列
+    public const string PropLabels = "labels";         // Addressables ラベル（カンマ連結）
 
     // 増築（curation 成長）: クエリミス・ログ
     public const string PropQuery = "query";           // 記録されたクエリ文字列

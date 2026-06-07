@@ -263,3 +263,23 @@
 - **影響**: `GraphRepository.StructuralBasis`/`ResolvesToConcept`/`AddSemanticEdge(requireBasis,basisHops)`、
   CLI `sem add --require-basis --basis-hops` / `basis`、`.claude/skills/ukg-curate/`。
   統合テスト `StructuralBasis_*`/`AddSemanticEdge_RequireBasis_*` を追加。
+
+## ADR-015: Addressables を構造グラフに載せる（グループ/エントリ/アドレス→アセット/Load）
+
+- **文脈**: Addressables の「構築/配線」（どのアセットがどのグループ・どのアドレスで、どのコードからロードされるか）が
+  グラフに無く、コーダーエージェントの取得が弱かった。Unity 結合は GetComponent 系のみだった（ADR-004）。
+- **判断**: Addressables 専用の抽出を追加（非搭載プロジェクトでは空＝壊れない）。
+  - **AddressableExtractor**（asset側）: AddressableAssetGroup の .asset(YAML) を正規表現で解析し、
+    `AddressableGroup` / `AddressableEntry`(address) ノード、`HAS_ENTRY`、`ADDRESSES`(エントリ→Asset guid) を生成。
+    エントリ列(m_SerializeEntries)を持つ .asset のみ対象、エントリ0なら何も出さない。
+  - **CSharpExtractor**（code側）: `Addressables.Load*/Instantiate*("literal")` を構文検出し、
+    `LOADS`(型 → AddressableEntry "addr:<literal>") を張る（リテラルアドレスのみ、解決不要）。
+  - `AddressableGroup`/`AddressableEntry` を IndexedLabels（key索引＋ライフサイクル）と CandidateLabels（語彙検索）に追加。
+    → アドレス文字列が `candidates` で引ける（"player-prefab はどこ"）。
+- **理由**: 構造（決定的）で「グループの中身」「アドレス→アセット」「コード→アドレス」を引けるようにするのが本対応。
+  curation（手動意味づけ）では配線は埋まらない。ADR-004 の Unity 結合を Addressables に拡張した位置づけ。
+- **代替案**: AssetReference フィールド→アセットの解決（シリアライズ値が必要でソースだけでは不可）→ 次段。
+  非リテラルアドレス（変数/定数）→ 静的解決不可のため対象外（リテラルのみ）。
+- **影響**: `AddressableExtractor`、`CSharpExtractor`(LOADS)、`IndexPipeline`(層追加)、Schema(ラベル/エッジ/プロパティ)、
+  `GraphRepository.IndexedLabels`/`CandidateLabels`。フィクスチャに SampleGroup.asset / AddressableLoader.cs、
+  ユニット+統合テスト追加（51 green）。

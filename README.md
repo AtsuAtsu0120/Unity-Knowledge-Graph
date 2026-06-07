@@ -25,7 +25,7 @@ Skillの漸進的開示で軽量に保つ。コアは `Ukg.Core` に分離して
 ```
 src/
   Ukg.Core/         グラフモデル・FalkorDBクライアント・リポジトリ・埋め込み・コミュニティ
-  Ukg.Extractors/   CSharpExtractor(Roslyn) / AssetExtractor(.meta,YAML) / UnityManifest / IndexPipeline
+  Ukg.Extractors/   CSharpExtractor(Roslyn) / AssetExtractor(.meta,YAML) / AddressableExtractor(グループ/アドレス) / UnityManifest / IndexPipeline
   Ukg.Cli/          ukg コマンド（index/status/watch/search/candidates/query/find/neighbors/deps/impact/sem/concept/community/reflect/gaps/basis）
 unity/
   com.ukg.exporter/ Unity Editor 用エクスポータ(UPM)。AssetDatabase真値の依存をJSON出力（任意）
@@ -105,8 +105,8 @@ dotnet run --project src/Ukg.Cli -- sem ls
 
 | 種別 | ラベル / タイプ |
 |---|---|
-| ノード | `Class` `Interface` `Struct` `Enum` `Method` `Namespace` `Asset` `Concept` |
-| 静的エッジ (`source=static`) | `INHERITS` `IMPLEMENTS` `REFERENCES` `DECLARED_IN` `CALLS` `USES_COMPONENT` `IN_NAMESPACE` `DEPENDS_ON` `SCRIPT_OF` |
+| ノード | `Class` `Interface` `Struct` `Enum` `Method` `Namespace` `Asset` `Concept` `AddressableGroup` `AddressableEntry` |
+| 静的エッジ (`source=static`) | `INHERITS` `IMPLEMENTS` `REFERENCES` `DECLARED_IN` `CALLS` `USES_COMPONENT` `IN_NAMESPACE` `DEPENDS_ON` `SCRIPT_OF` `HAS_ENTRY` `ADDRESSES` `LOADS` |
 | 意味エッジ (`source=semantic`) | `RELATES_TO` `PART_OF` `RESPONSIBLE_FOR` `COLLABORATES_WITH` |
 
 設定は環境変数で上書き可能:

@@ -58,6 +58,12 @@ public static class IndexPipeline
             scriptOf = BridgeScriptsByFilename(csGraph, assetGraph, merged);
         }
 
+        // Addressables 層（グループ定義 .asset → グループ/エントリ/アドレス→アセット）。
+        // 非搭載プロジェクトでは空（ADR-015）。
+        var addr = new AddressableExtractor().Extract(projectPath);
+        merged.Nodes.AddRange(addr.Nodes);
+        merged.Edges.AddRange(addr.Edges);
+
         var stats = repo.ApplyStaticLayer(merged, embedder.Dimension);
 
         int communityCount = 0;

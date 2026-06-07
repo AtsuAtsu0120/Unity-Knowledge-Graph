@@ -139,6 +139,30 @@ public sealed class IntegrationTests
     }
 
     [Fact]
+    public void Addressables_GroupEntryAssetAndLoadAreWired()
+    {
+        using var client = Connect();
+        if (client is null) return;
+        var repo = new GraphRepository(client);
+        Index(repo, new HashingEmbedder());
+
+        // グループ → エントリ → 実アセット の鎖
+        var chain = repo.Raw(
+            "MATCH (g:AddressableGroup {name:'SampleGroup'})-[:HAS_ENTRY]->(e:AddressableEntry {address:'player-prefab'})" +
+            "-[:ADDRESSES]->(a:Asset) RETURN a.guid AS guid");
+        Assert.Equal("55555555555555555555555555555555", chain.Rows[0][0]?.ToString());
+
+        // コード → アドレス（Addressables.Load("player-prefab")）
+        var loads = repo.Raw(
+            "MATCH (c:Class {name:'AddressableLoader'})-[:LOADS]->(e:AddressableEntry) RETURN e.address AS addr");
+        Assert.Equal("player-prefab", loads.Rows[0][0]?.ToString());
+
+        // 「player-prefab はどこ」を candidates で引ける（grep 代替）
+        var cand = repo.Candidates("player-prefab", 5, null);
+        Assert.Contains(cand.Rows, r => r[2]?.ToString() == "addr:player-prefab");
+    }
+
+    [Fact]
     public void StructuralBasis_RespectsHopLimit()
     {
         using var client = Connect();

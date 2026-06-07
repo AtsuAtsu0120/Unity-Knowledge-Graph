@@ -14,14 +14,16 @@ public sealed class GraphRepository
     private static readonly string[] IndexedLabels =
     {
         Schema.Class, Schema.Interface, Schema.Struct, Schema.Enum,
-        Schema.Namespace, Schema.Asset, Schema.Concept, Schema.Method
+        Schema.Namespace, Schema.Asset, Schema.Concept, Schema.Method,
+        Schema.AddressableGroup, Schema.AddressableEntry
     };
 
     /// <summary>語彙あいまい検索（Candidates）の対象ラベル。</summary>
     private static readonly string[] CandidateLabels =
     {
         Schema.Class, Schema.Interface, Schema.Struct, Schema.Enum,
-        Schema.Namespace, Schema.Asset, Schema.Concept, Schema.Method
+        Schema.Namespace, Schema.Asset, Schema.Concept, Schema.Method,
+        Schema.AddressableGroup, Schema.AddressableEntry
     };
 
     /// <summary>各ラベルの key 索引と、埋め込みラベルのベクトル索引を作成する（既存なら無視）。</summary>
